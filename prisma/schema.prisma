@@ -1,0 +1,96 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+  //url      = env("DATABASE_URL")
+}
+
+
+model Institucion {
+  id               String             @id @default(cuid())
+  nombre           String
+  ciclo_escolar    String?
+  dias_por_semana  Int     @default(5)
+  lecciones_por_dia Int    @default(7)
+  creador          String?
+  createdAt        DateTime @default(now())
+  periodos         DefinicionPeriodo[]
+  docentes         Docente[]
+  cursos           Curso[]
+  asignaturas      Asignatura[]
+  cargas           CargaAcademica[]
+  imports          ImportJob[]
+}
+
+model DefinicionPeriodo {
+  id             String     @id @default(cuid())
+  institucionId  String
+  indice         Int
+  abreviatura    String?
+  hora_inicio    String?    // "08:00"
+  hora_fin       String?    // "08:45"
+  duracion_min   Int?       // 45
+  institucion    Institucion @relation(fields: [institucionId], references: [id])
+}
+
+model Docente {
+  id            String   @id @default(cuid())
+  nombre        String
+  abreviatura   String   @unique
+  activo        Boolean  @default(true)
+  institucionId String
+  institucion   Institucion @relation(fields: [institucionId], references: [id])
+  cargas        CargaAcademica[]
+}
+
+model Curso {
+  id            String   @id @default(cuid())
+  nombre        String
+  abreviatura   String   @unique
+  institucionId String
+  institucion   Institucion @relation(fields: [institucionId], references: [id])
+  cargas        CargaAcademica[]
+}
+
+model Asignatura {
+  id            String   @id @default(cuid())
+  nombre        String
+  abreviatura   String   @unique
+  institucionId String
+  institucion   Institucion @relation(fields: [institucionId], references: [id])
+  cargas        CargaAcademica[]
+}
+
+model CargaAcademica {
+  id            String   @id @default(cuid())
+  asignaturaId  String
+  cursoId       String
+  docenteId     String?
+  sesiones_sem  Int      // CANTIDAD
+  duracion_slots Int     // DURACION (en número de lecciones)
+  institucionId String
+  asignatura    Asignatura @relation(fields: [asignaturaId], references: [id])
+  curso         Curso      @relation(fields: [cursoId], references: [id])
+  docente       Docente?   @relation(fields: [docenteId], references: [id])
+  institucion   Institucion @relation(fields: [institucionId], references: [id])
+}
+
+model ImportJob {
+  id            String   @id @default(cuid())
+  institucionId String
+  usuario       String?
+  status        String   @default("pendiente") // pendiente | error | completado
+  raw_json      String?  // guardamos el preview como snapshot
+  errores       String?  // errores en texto (si aplica)
+  createdAt     DateTime @default(now())
+  institucion   Institucion @relation(fields: [institucionId], references: [id])
+}
