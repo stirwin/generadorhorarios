@@ -1,21 +1,54 @@
-// app/api/instituciones/route.ts
 import { NextResponse } from "next/server";
-import prisma from "@/lib/prisma";
+import { prisma } from "@/lib/prisma";
+
+
+// GET /api/instituciones - Obtener todas las instituciones
+export async function GET() {
+  try {
+    const instituciones = await prisma.institucion.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: {
+        periodos: true,
+        docentes: true,
+        clases: true,
+        asignaturas: true,
+        cargas: true
+      }
+    });
+    return NextResponse.json(instituciones);
+  } catch (error) {
+    console.error('Error al obtener instituciones:', error);
+    return NextResponse.json(
+      { error: "Error al obtener las instituciones" },
+      { status: 500 }
+    );
+  }
+}
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json();
+    // leer texto y parsear manualmente para manejar errores de JSON y mostrar el body bruto
+    const raw = await request.text();
+    let body;
+    try {
+      body = raw ? JSON.parse(raw) : {};
+    } catch (e) {
+      console.error("JSON parse error. Raw body:", raw.slice(0, 1000));
+      return NextResponse.json({ error: "JSON inválido en el body", raw: raw.slice(0, 1000) }, { status: 400 });
+    }
+
     const {
       nombre,
       ciclo_escolar,
       dias_por_semana = 5,
       lecciones_por_dia = 7,
-      periodos = [], // [{ indice, abreviatura, hora_inicio, hora_fin, duracion_min }]
+      periodos = [],
       creador,
     } = body;
 
     if (!nombre) return NextResponse.json({ error: "Nombre requerido" }, { status: 422 });
 
+    // ... resto igual ...
     const institucion = await prisma.institucion.create({
       data: {
         nombre,
@@ -38,7 +71,8 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ institucion }, { status: 201 });
   } catch (error: any) {
-    console.error("Error crear institucion:", error);
-    return NextResponse.json({ error: error.message || "Error interno" }, { status: 500 });
+    console.error("Error crear institucion (server):", error);
+    // En dev, devuelve mensaje; en prod evita exponer detalles sensibles
+    return NextResponse.json({ error: error.message || "Error interno del servidor" }, { status: 500 });
   }
 }

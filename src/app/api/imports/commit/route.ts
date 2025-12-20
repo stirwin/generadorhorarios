@@ -1,6 +1,6 @@
 // app/api/imports/commit/route.ts
 import { NextResponse } from "next/server";
-import prisma from "@/lib/prisma";
+import { prisma } from "@/lib/prisma";
 
 export async function POST(request: Request) {
   try {
@@ -11,7 +11,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "preview e institucionId son requeridos" }, { status: 422 });
     }
 
-    const { docentes, cursos, asignaturas, cargas } = preview;
+    const { docentes, clases, asignaturas, cargas } = preview;
 
     // transacción para crear/actualizar datos
     const result = await prisma.$transaction(async (tx) => {
@@ -25,11 +25,11 @@ export async function POST(request: Request) {
           create: { nombre: d.nombre || "", abreviatura: abre, institucionId },
         });
       }
-      // upsert cursos
-      for (const c of cursos) {
+      // upsert clases
+      for (const c of clases) {
         const abre = (c.abreviatura || c.abreviatura === "") ? c.abreviatura.trim() : c.abreviatura;
         if (!abre) continue;
-        await tx.curso.upsert({
+        await tx.clase.upsert({
           where: { abreviatura: abre },
           update: { nombre: c.nombre || "", institucionId },
           create: { nombre: c.nombre || "", abreviatura: abre, institucionId },
@@ -49,23 +49,23 @@ export async function POST(request: Request) {
       // ahora crear cargas: necesitamos resolver ids por abreviatura
       // precargar índices
       const docentesDB = await tx.docente.findMany({ where: { institucionId } });
-      const cursosDB = await tx.curso.findMany({ where: { institucionId } });
+      const clasesDB = await tx.clase.findMany({ where: { institucionId } });
       const asignsDB = await tx.asignatura.findMany({ where: { institucionId } });
 
       const docentesMap = new Map(docentesDB.map((d) => [d.abreviatura.trim().toLowerCase(), d.id]));
-      const cursosMap = new Map(cursosDB.map((c) => [c.abreviatura.trim().toLowerCase(), c.id]));
+      const clasesMap = new Map(clasesDB.map((c) => [c.abreviatura.trim().toLowerCase(), c.id]));
       const asignMap = new Map(asignsDB.map((a) => [a.abreviatura.trim().toLowerCase(), a.id]));
 
       for (const carga of cargas) {
         const asignKey = (carga.asignatura || "").trim().toLowerCase();
-        const cursoKey = (carga.curso || "").trim().toLowerCase();
+        const claseKey = (carga.clase || "").trim().toLowerCase();
         const docenteKey = (carga.docenteAbrev || "").trim().toLowerCase();
 
         const asignaturaId = asignMap.get(asignKey) || null;
-        const cursoId = cursosMap.get(cursoKey) || null;
+        const claseId = clasesMap.get(claseKey) || null;
         const docenteId = docentesMap.get(docenteKey) || null;
 
-        if (!asignaturaId || !cursoId) {
+        if (!asignaturaId || !claseId) {
           // saltar filas inválidas (podríamos acumular errores)
           continue;
         }
@@ -74,7 +74,7 @@ export async function POST(request: Request) {
         await tx.cargaAcademica.create({
           data: {
             asignaturaId,
-            cursoId,
+            claseId,
             docenteId,
             sesiones_sem: Number(carga.cantidad || 0),
             duracion_slots: Number(carga.duracion || 1),

@@ -1,19 +1,11 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
-  provider = "prisma-client"
-  output   = "../src/generated/prisma"
+  provider = "prisma-client-js"
 }
 
 datasource db {
   provider = "sqlite"
-  //url      = env("DATABASE_URL")
+  url      = "file:./dev.db"
 }
-
 
 model Institucion {
   id               String             @id @default(cuid())
@@ -25,7 +17,7 @@ model Institucion {
   createdAt        DateTime @default(now())
   periodos         DefinicionPeriodo[]
   docentes         Docente[]
-  cursos           Curso[]
+  clases           Clase[]
   asignaturas      Asignatura[]
   cargas           CargaAcademica[]
   imports          ImportJob[]
@@ -52,7 +44,7 @@ model Docente {
   cargas        CargaAcademica[]
 }
 
-model Curso {
+model Clase {
   id            String   @id @default(cuid())
   nombre        String
   abreviatura   String   @unique
@@ -73,13 +65,13 @@ model Asignatura {
 model CargaAcademica {
   id            String   @id @default(cuid())
   asignaturaId  String
-  cursoId       String
+  claseId       String
   docenteId     String?
   sesiones_sem  Int      // CANTIDAD
   duracion_slots Int     // DURACION (en número de lecciones)
   institucionId String
   asignatura    Asignatura @relation(fields: [asignaturaId], references: [id])
-  curso         Curso      @relation(fields: [cursoId], references: [id])
+  clase         Clase      @relation(fields: [claseId], references: [id])
   docente       Docente?   @relation(fields: [docenteId], references: [id])
   institucion   Institucion @relation(fields: [institucionId], references: [id])
 }
