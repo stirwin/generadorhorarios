@@ -19,15 +19,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ImportadorExcel } from "../importaciones/ImportadorExcel";
-
-export type Institucion = {
-  id: string;
-  nombre: string;
-  nivel: string;
-  estadoHorario: "creado" | "en-progreso" | "sin-iniciar";
-  dias_por_semana?: number;
-  lecciones_por_dia?: number;
-};
+import { Institucion } from "@/types/institucion";
 
 export default function InstitucionWizard() {
   // Estado global de instituciones
@@ -132,14 +124,18 @@ export default function InstitucionWizard() {
         throw new Error(data?.error || JSON.stringify(data));
       }
 
-      const nueva: Institucion = {
-        id: data.institucion.id,
-        nombre: data.institucion.nombre,
-        nivel: cicloEscolar,
-        estadoHorario: "sin-iniciar",
-        dias_por_semana: diasPorSemana,
-        lecciones_por_dia: leccionesPorDia,
-      };
+     const nueva: Institucion = {
+  id: data.institucion.id,
+  nombre: data.institucion.nombre,
+  nivel: cicloEscolar,
+  cicloEscolar: cicloEscolar, // Agregado
+  estadoHorario: "sin-iniciar",
+  dias_por_semana: diasPorSemana,
+  diasPorSemana: diasPorSemana, // Agregado
+  lecciones_por_dia: leccionesPorDia,
+  leccionesPorDia: leccionesPorDia, // Agregado
+  clases: [] // Inicializamos como array vacío
+};
 
       setInstituciones((prev) => [nueva, ...prev]);
       setInstitucionSeleccionada(nueva);
