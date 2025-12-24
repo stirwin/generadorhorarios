@@ -1,11 +1,10 @@
 import { Save, Download, Eye } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import type { Institucion } from "@/app/page"
 import { Badge } from "@/components/ui/badge"
 
 interface PropsEditorHorario {
-  institucion: Institucion
+  institucion: any; // Usar 'any' temporalmente, puedes reemplazar con el tipo real si lo tienes
 }
 
 export function EditorHorario({ institucion }: PropsEditorHorario) {

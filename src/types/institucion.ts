@@ -11,12 +11,31 @@ export interface Clase {
   createdAt?: string;
   updatedAt?: string;
 }
+export type TimetableCell = {
+  // valores que tu generador ya pone:
+  lessonId?: string; // identificador único de la "lesson" expandida
+  asignaturaId?: string;
+  asignaturaNombre?: string;
+  docenteId?: string | null;
+  docenteNombre?: string | null;
+  duracion?: number; // en slots
+  // otros metadatos opcionales...
+};
+
+type Periodo = {
+  indice: number;
+  abreviatura?: string;
+  hora_inicio?: string; // "08:00"
+  hora_fin?: string; // "08:45"
+  duracion_min?: number;
+};
 
   export interface Institucion {
   id: string;
   nombre: string;
   nivel: string;
   cicloEscolar: string;
+      periodos?: Periodo[]; // si existe, se usa para las etiquetas de hora
   clases?: Clase[]; // <--- necesario
   diasPorSemana: number;
   dias_por_semana?: number;

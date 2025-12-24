@@ -35,7 +35,7 @@ export function BarraLateral({
       id: "horario" as const,
       etiqueta: "Crear/Editar Horario",
       icono: Calendar,
-      deshabilitado: !institucionSeleccionada,
+      deshabilitado: false,
     },
     { id: "configuracion" as const, etiqueta: "Configuración", icono: Settings, deshabilitado: false },
   ]
@@ -103,6 +103,7 @@ export function BarraLateral({
                   <Icono className="w-5 h-5" />
                   <span>{item.etiqueta}</span>
                 </button>
+                
               </li>
             )
           })}

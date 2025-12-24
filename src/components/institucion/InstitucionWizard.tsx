@@ -1,8 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
-import { BarraLateral } from "@/components/barra-lateral";
-import { PanelControl } from "@/components/panel-control";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -16,25 +14,42 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ImportadorExcel } from "../importaciones/ImportadorExcel";
-import { Institucion } from "@/types/institucion";
+//import EstructuraHorario from "./EstructuraHorario";
+import type { Institucion as InstitucionType } from "@/types/institucion";
+import HorarioView from "./horarios/HorarioView";
+
+/**
+ * InstitucionWizard
+ *
+ * Componente que:
+ * - carga las instituciones (GET /api/instituciones)
+ * - permite crear una nueva institución (POST /api/instituciones) vía wizard modal
+ * - permite importar/preview mediante ImportadorExcel (paso 3)
+ * - dispara la generación del timetable (POST /api/timetable/generate)
+ * - muestra la EstructuraHorario (componente separado)
+ *
+ * Nota: adapta las rutas si las tienes diferentes.
+ */
 
 export default function InstitucionWizard() {
-  // Estado global de instituciones
-  const [instituciones, setInstituciones] = useState<Institucion[]>([]);
-  const [institucionSeleccionada, setInstitucionSeleccionada] = useState<Institucion | null>(null);
+  // -------------------------
+  // Estados principales
+  // -------------------------
+  const [instituciones, setInstituciones] = useState<InstitucionType[]>([]);
+  const [institucionSeleccionada, setInstitucionSeleccionada] = useState<InstitucionType | null>(null);
 
-  // Wizard modal state
+  // Wizard modal
   const [wizardOpen, setWizardOpen] = useState(false);
   const [step, setStep] = useState(1);
 
-  // Paso 2 (configuracion)
+  // Paso 2 - configuración
   const [nombreEscuela, setNombreEscuela] = useState("");
   const [cicloEscolar, setCicloEscolar] = useState("");
-  const [leccionesPorDia, setLeccionesPorDia] = useState(7);
-  const [diasPorSemana, setDiasPorSemana] = useState(5);
+  const [leccionesPorDia, setLeccionesPorDia] = useState<number>(7);
+  const [diasPorSemana, setDiasPorSemana] = useState<number>(5);
   const [periodos, setPeriodos] = useState(() =>
     Array.from({ length: 7 }).map((_, i) => ({
       indice: i + 1,
@@ -45,45 +60,51 @@ export default function InstitucionWizard() {
     }))
   );
 
-  // Import/preview flags
+  // Import/preview flags para el paso 3
   const [importPreviewLoaded, setImportPreviewLoaded] = useState(false);
   const [importPersisted, setImportPersisted] = useState(false);
-  const [previewCargado, setPreviewCargado] = useState(false);
 
-  // Cargar instituciones desde API al montar
+  // Timetable (resultado del generador)
+  const [timetable, setTimetable] = useState<Record<string, Array<any>> | null>(null);
+  const [loadingTimetable, setLoadingTimetable] = useState(false);
+  const [timetableStats, setTimetableStats] = useState<any | null>(null);
+
+  // -------------------------
+  // Efectos (carga inicial)
+  // -------------------------
   useEffect(() => {
-    async function cargarInstituciones() {
+    // cargar instituciones al montar
+    async function fetchInstituciones() {
       try {
         const res = await fetch("/api/instituciones");
-        if (!res.ok) throw new Error("Error al obtener instituciones");
+        if (!res.ok) throw new Error(`Error al obtener instituciones: ${res.status}`);
         const data = await res.json();
-
-        const institucionesServer: Institucion[] = data.map((ins: any) => ({
+        // Data expected to be array; adapta si responde distinto.
+        const mapped: InstitucionType[] = (data || []).map((ins: any) => ({
           id: ins.id,
           nombre: ins.nombre,
-          nivel: ins.nivel || "Desconocido",
-          
-          estadoHorario: ins.estadoHorario || "sin-iniciar",
-          dias_por_semana: ins.dias_por_semana || 5,
-          lecciones_por_dia: ins.lecciones_por_dia || 7,
-          clases: ins.clases || [],
+          nivel: ins.nivel ?? "Desconocido",
+          estadoHorario: ins.estadoHorario ?? "sin-iniciar",
+          dias_por_semana: ins.dias_por_semana ?? 5,
+          lecciones_por_dia: ins.lecciones_por_dia ?? 7,
+          // Mantener cualquier campo extra como clases
+          clases: ins.clases ?? [],
         }));
-
-        setInstituciones(institucionesServer);
-        setInstitucionSeleccionada(institucionesServer[0] || null);
+        setInstituciones(mapped);
+        setInstitucionSeleccionada(mapped[0] ?? null);
       } catch (err) {
-        console.error("Error cargando instituciones:", err);
+        console.error("fetchInstituciones error:", err);
       }
     }
 
-    cargarInstituciones();
+    fetchInstituciones();
   }, []);
 
-  // Ajustar periodos si cambia leccionesPorDia
+  // Ajustar periodos cuando cambian leccionesPorDia
   useEffect(() => {
     setPeriodos((prev) => {
       if (prev.length === leccionesPorDia) return prev;
-      return Array.from({ length: leccionesPorDia }).map((_, i) => prev[i] || {
+      return Array.from({ length: leccionesPorDia }).map((_, i) => prev[i] ?? {
         indice: i + 1,
         abreviatura: String(i + 1),
         hora_inicio: "08:00",
@@ -93,8 +114,10 @@ export default function InstitucionWizard() {
     });
   }, [leccionesPorDia]);
 
-  // Función para crear institucion en servidor
-  async function crearInstitucionServidor() {
+  // -------------------------
+  // Helpers: fetch / create / generate
+  // -------------------------
+  async function crearInstitucionServidor(): Promise<InstitucionType | null> {
     try {
       const payload = {
         nombre: nombreEscuela,
@@ -103,7 +126,6 @@ export default function InstitucionWizard() {
         lecciones_por_dia: leccionesPorDia,
         periodos,
       };
-
       const res = await fetch("/api/instituciones", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -111,21 +133,16 @@ export default function InstitucionWizard() {
       });
 
       const contentType = res.headers.get("content-type") || "";
-      let data: any = null;
-
-      if (contentType.includes("application/json")) {
-        data = await res.json();
-      } else {
-        const text = await res.text();
-        throw new Error(`Respuesta inesperada del servidor: ${text.slice(0, 1000)}`);
-      }
+      const data = contentType.includes("application/json") ? await res.json() : null;
 
       if (!res.ok) {
-        throw new Error(data?.error || JSON.stringify(data));
+        const message = data?.error ?? `Status ${res.status}`;
+        throw new Error(message);
       }
 
-     const nueva: Institucion = {
-  id: data.institucion.id,
+      // Construir objeto InstitucionType mínimo para la UI
+      const nueva: InstitucionType = {
+      id: data.institucion.id,
   nombre: data.institucion.nombre,
   nivel: cicloEscolar,
   cicloEscolar: cicloEscolar, // Agregado
@@ -135,10 +152,13 @@ export default function InstitucionWizard() {
   lecciones_por_dia: leccionesPorDia,
   leccionesPorDia: leccionesPorDia, // Agregado
   clases: [] // Inicializamos como array vacío
-};
+      };
 
+      // Prepend a la lista y seleccionar
       setInstituciones((prev) => [nueva, ...prev]);
       setInstitucionSeleccionada(nueva);
+
+      // Reset flags de import
       setImportPreviewLoaded(false);
       setImportPersisted(false);
 
@@ -150,87 +170,71 @@ export default function InstitucionWizard() {
     }
   }
 
+  async function handleGenerateTimetable() {
+    if (!institucionSeleccionada) {
+      alert("Selecciona una institución antes de generar el horario.");
+      return;
+    }
+    setLoadingTimetable(true);
+    try {
+      const res = await fetch("/api/timetable/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ institucionId: institucionSeleccionada.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error ?? `Status ${res.status}`);
+
+      // Esperamos data.timetable -> Record<claseId, array de celdas>
+      setTimetable(data.timetable ?? null);
+      setTimetableStats(data.stats ?? null);
+    } catch (err: any) {
+      console.error("handleGenerateTimetable error:", err);
+      alert("No se pudo generar el horario: " + (err.message || err));
+    } finally {
+      setLoadingTimetable(false);
+    }
+  }
+
+  // -------------------------
+  // UI helpers / memo
+  // -------------------------
+  // Map id -> { id, nombre } (usado por EstructuraHorario para mostrar nombre por id)
+  const classesMap = useMemo(() => {
+    const map: Record<string, { id: string; nombre: string }> = {};
+    for (const c of institucionSeleccionada?.clases ?? []) {
+      // Asegurarse que la clase tiene id y nombre
+      if (c?.id) {
+        map[c.id] = { id: c.id, nombre: c.nombre ?? String(c.id) };
+      }
+    }
+    return map;
+  }, [institucionSeleccionada?.clases]);
+
+  // Badge helper
+  const badgeForEstado = (estado: InstitucionType["estadoHorario"]) => {
+    if (estado === "creado") return <Badge>Creado</Badge>;
+    if (estado === "en-progreso") return <Badge>En progreso</Badge>;
+    return <Badge variant="outline">Sin iniciar</Badge>;
+  };
+
+  // -------------------------
   // Wizard handlers
+  // -------------------------
   const handleNext = async () => {
     if (step === 1) return setStep(2);
 
     if (step === 2) {
-      if (!nombreEscuela.trim()) { alert('El nombre de la escuela es requerido'); return; }
-      if (!cicloEscolar.trim()) { alert('El ciclo escolar es requerido'); return; }
+      if (!nombreEscuela.trim()) { alert("El nombre de la escuela es requerido"); return; }
+      if (!cicloEscolar.trim()) { alert("El ciclo escolar es requerido"); return; }
       const nueva = await crearInstitucionServidor();
       if (nueva) setStep(3);
-      return;
     }
   };
 
   const handleBack = () => {
     if (step > 1) setStep(step - 1);
   };
-
-  const badgeForEstado = (estado: Institucion['estadoHorario']) => {
-    if (estado === 'creado') return <Badge>Creado</Badge>;
-    if (estado === 'en-progreso') return <Badge>En progreso</Badge>;
-    return <Badge variant="outline">Sin iniciar</Badge>;
-  };
-
- function EstructuraHorario({ institucion }: { institucion: Institucion | null }) {
-  // Si no hay institución, mostramos tabla vacía
-  if (!institucion) return <div className="p-6">Selecciona una institución para ver la estructura.</div>;
-
-  const dias = institucion.dias_por_semana || 5;
-  const lecciones = institucion.lecciones_por_dia || 7;
-  const diasNombres = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo'].slice(0, dias);
-
-  // Usamos las clases reales
-  const clases = institucion.clases ?? [];
-
-  return (
-    <div className="p-6">
-      <h2 className="text-xl font-semibold mb-4">Estructura del horario — {institucion.nombre}</h2>
-      <div className="overflow-auto border rounded">
-        <table className="min-w-full table-auto border-collapse">
-          <thead>
-            <tr>
-              <th className="sticky left-0 bg-background z-10 p-2 border">Clase</th>
-              {diasNombres.map((dia) => (
-                <th key={dia} className="p-2 text-center">{dia}</th>
-              ))}
-            </tr>
-            <tr>
-              <th />
-              {diasNombres.map((dia) => (
-                <th key={dia + '-sub'} className="p-0">
-                  <div className="grid" style={{ gridTemplateColumns: `repeat(${lecciones}, minmax(48px,1fr))` }}>
-                    {Array.from({ length: lecciones }).map((_, i) => (
-                      <div key={i} className="text-xs p-2 border text-center">{i + 1}</div>
-                    ))}
-                  </div>
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {clases.map((clase) => (
-              <tr key={clase.id} className="border-t">
-                <td className="sticky left-0 bg-background z-10 p-2 font-medium border-r">{clase.nombre}</td>
-                {diasNombres.map((dia) => (
-                  <td key={clase.id + dia} className="p-0">
-                    <div className="grid" style={{ gridTemplateColumns: `repeat(${lecciones}, minmax(48px,1fr))` }}>
-                      {Array.from({ length: lecciones }).map((_, i) => (
-                        <div key={i} className="h-12 border p-1 text-xs"></div>
-                      ))}
-                    </div>
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
 
   const handleFooterPrimary = async () => {
     if (step === 3) {
@@ -245,29 +249,38 @@ export default function InstitucionWizard() {
       setStep(1);
       setImportPreviewLoaded(false);
       setImportPersisted(false);
-      setPreviewCargado(false);
       return;
     }
     await handleNext();
   };
 
+  // -------------------------
+  // Render
+  // -------------------------
   return (
     <div className="flex h-screen bg-background">
-      {/* Barra lateral */}
-      <div className="w-60 border-r">
+      {/* Sidebar simple */}
+      <aside className="w-60 border-r">
         <div className="p-4 border-b">Menu</div>
         <div className="p-4 space-y-2">
           <Button onClick={() => setWizardOpen(true)}>Crear institución</Button>
+
           <div className="mt-4">
             <h4 className="text-sm font-medium">Instituciones</h4>
             <ul className="space-y-2 mt-2">
               {instituciones.map((ins) => (
                 <li key={ins.id}>
-                  <button className="w-full text-left p-2 rounded hover:bg-muted/50" onClick={() => {
-                    setInstitucionSeleccionada(ins);
-                    setImportPreviewLoaded(false);
-                    setImportPersisted(false);
-                  }}>
+                  <button
+                    className="w-full text-left p-2 rounded hover:bg-muted/50"
+                    onClick={() => {
+                      setInstitucionSeleccionada(ins);
+                      setImportPreviewLoaded(false);
+                      setImportPersisted(false);
+                      // reset timetable if institution changes
+                      setTimetable(null);
+                      setTimetableStats(null);
+                    }}
+                  >
                     <div className="flex justify-between items-center">
                       <span>{ins.nombre}</span>
                       <span className="ml-2">{badgeForEstado(ins.estadoHorario)}</span>
@@ -279,8 +292,9 @@ export default function InstitucionWizard() {
             </ul>
           </div>
         </div>
-      </div>
+      </aside>
 
+      {/* Main */}
       <main className="flex-1 overflow-auto">
         <div className="p-6">
           <h1 className="text-2xl font-bold mb-4">Dashboard de Institución</h1>
@@ -290,11 +304,13 @@ export default function InstitucionWizard() {
             <Card>
               <CardHeader>
                 <CardTitle>Institución seleccionada</CardTitle>
-                <CardDescription>{institucionSeleccionada?.nombre || 'Ninguna'}</CardDescription>
+                <CardDescription>{institucionSeleccionada?.nombre ?? "Ninguna"}</CardDescription>
               </CardHeader>
               <CardContent>
-                <p className="text-sm text-muted-foreground">Nivel: {institucionSeleccionada?.nivel || '-'}</p>
-                <p className="text-sm text-muted-foreground">Días: {institucionSeleccionada?.dias_por_semana || '-'} • Lecciones: {institucionSeleccionada?.lecciones_por_dia || '-'}</p>
+                <p className="text-sm text-muted-foreground">Nivel: {institucionSeleccionada?.nivel ?? "-"}</p>
+                <p className="text-sm text-muted-foreground">
+                  Días: {institucionSeleccionada?.dias_por_semana ?? "-"} • Lecciones: {institucionSeleccionada?.lecciones_por_dia ?? "-"}
+                </p>
               </CardContent>
               <CardFooter>
                 <Button onClick={() => setWizardOpen(true)}>Configurar / Reconfigurar</Button>
@@ -305,7 +321,7 @@ export default function InstitucionWizard() {
             <Card>
               <CardHeader>
                 <CardTitle>Importar datos</CardTitle>
-                <CardDescription>Docentes, cursos, asignaturas y carga académica</CardDescription>
+                <CardDescription>Docentes, clases, asignaturas y carga académica</CardDescription>
               </CardHeader>
               <CardContent>
                 <p className="text-sm text-muted-foreground">Sube el Excel siguiendo la plantilla</p>
@@ -314,14 +330,8 @@ export default function InstitucionWizard() {
                 {institucionSeleccionada ? (
                   <ImportadorExcel
                     institucionId={institucionSeleccionada.id}
-                    onPreviewLoaded={() => {
-                      setImportPreviewLoaded(true);
-                      setImportPersisted(false);
-                    }}
-                    onPersisted={() => {
-                      setImportPreviewLoaded(true);
-                      setImportPersisted(true);
-                    }}
+                    onPreviewLoaded={() => { setImportPreviewLoaded(true); setImportPersisted(false); }}
+                    onPersisted={() => { setImportPreviewLoaded(true); setImportPersisted(true); }}
                   />
                 ) : (
                   <div className="text-sm text-muted-foreground">Selecciona una institución para importar</div>
@@ -329,39 +339,64 @@ export default function InstitucionWizard() {
               </CardFooter>
             </Card>
 
-            {/* Estado del horario */}
+            {/* Estado y generación */}
             <Card>
               <CardHeader>
                 <CardTitle>Estado del horario</CardTitle>
                 <CardDescription>Progreso y acciones</CardDescription>
               </CardHeader>
               <CardContent>
-                <p className="text-sm text-muted-foreground">{institucionSeleccionada?.estadoHorario || '-'}</p>
+                <p className="text-sm text-muted-foreground">{institucionSeleccionada?.estadoHorario ?? "-"}</p>
               </CardContent>
               <CardFooter>
-                <Button disabled={!institucionSeleccionada}>Ver estructura</Button>
+                <div className="flex items-center gap-4 w-full">
+                  <Button
+                    disabled={!institucionSeleccionada || loadingTimetable}
+                    onClick={handleGenerateTimetable}
+                  >
+                    {loadingTimetable ? "Generando..." : "Generar horario"}
+                  </Button>
+
+                  {timetableStats && (
+                    <div className="text-sm text-muted-foreground">
+                      {timetableStats.assigned}/{timetableStats.lessonsTotal} asignadas • backtracks: {timetableStats.backtracks}
+                    </div>
+                  )}
+                </div>
               </CardFooter>
             </Card>
           </div>
 
-          <EstructuraHorario institucion={institucionSeleccionada} />
+          {/* Estructura del horario (componente separado) */}
+          <HorarioView
+            institucion={institucionSeleccionada}
+            timetableByClase={timetable ?? undefined}
+            onGenerate={handleGenerateTimetable} // opcional: ya tienes la función
+          />
         </div>
       </main>
 
-      {/* Wizard modal */}
-      <Dialog open={wizardOpen} onOpenChange={(open) => {
-        setWizardOpen(open);
-        if (!open) {
-          setStep(1);
-          setImportPreviewLoaded(false);
-          setImportPersisted(false);
-          setPreviewCargado(false);
-        }
-      }}>
-        <DialogTrigger asChild><div /></DialogTrigger>
-        <DialogContent className="max-w-[1400px] sm:max-w-[1400px] w-[98vw] h-[92vh] p-0 overflow-hidden rounded-lg" style={{ boxShadow: "0 12px 30px rgba(0,0,0,0.15)" }}>
-          {/* Header */}
+      {/* Wizard modal: creado/config/importar */}
+      <Dialog
+        open={wizardOpen}
+        onOpenChange={(open) => {
+          setWizardOpen(open);
+          if (!open) {
+            // reset wizard state when closed
+            setStep(1);
+            setImportPreviewLoaded(false);
+            setImportPersisted(false);
+          }
+        }}
+      >
+      
+
+        <DialogContent
+          className="max-w-[1400px] sm:max-w-[1400px] w-[98vw] h-[92vh] p-0 overflow-hidden rounded-lg"
+          style={{ boxShadow: "0 12px 30px rgba(0,0,0,0.15)" }}
+        >
           <div className="flex flex-col h-full">
+            {/* Header */}
             <div className="p-6 border-b">
               <DialogHeader>
                 <DialogTitle className="text-lg">Crear nueva institución</DialogTitle>
@@ -372,12 +407,16 @@ export default function InstitucionWizard() {
 
             {/* Body */}
             <div className="flex-1 overflow-auto p-6 modal-body">
+              {/* Step 1 */}
               {step === 1 && (
                 <div className="space-y-4">
-                  <p className="text-sm text-muted-foreground">Bienvenido: este asistente te guiará para crear la institución, definir los periodos y subir el Excel.</p>
+                  <p className="text-sm text-muted-foreground">
+                    Bienvenido: este asistente te guiará para crear la institución, definir los periodos y subir el Excel.
+                  </p>
                 </div>
               )}
 
+              {/* Step 2: Configuración */}
               {step === 2 && (
                 <div className="space-y-4 max-w-full">
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -417,10 +456,10 @@ export default function InstitucionWizard() {
                       {periodos.map((p, idx) => (
                         <div key={p.indice} className="flex items-center gap-2">
                           <div className="w-8 text-center">{p.indice}</div>
-                          <Input value={p.abreviatura} onChange={(e) => setPeriodos((prev) => prev.map((x,i)=> i===idx?{...x, abreviatura: e.target.value}:x))} />
-                          <Input value={p.hora_inicio} onChange={(e) => setPeriodos((prev) => prev.map((x,i)=> i===idx?{...x, hora_inicio: e.target.value}:x))} className="w-28" />
-                          <Input value={p.hora_fin} onChange={(e) => setPeriodos((prev) => prev.map((x,i)=> i===idx?{...x, hora_fin: e.target.value}:x))} className="w-28" />
-                          <Input type="number" value={p.duracion_min} onChange={(e) => setPeriodos((prev) => prev.map((x,i)=> i===idx?{...x, duracion_min: Number(e.target.value)}:x))} className="w-24" />
+                          <Input value={p.abreviatura} onChange={(e) => setPeriodos((prev) => prev.map((x, i) => i === idx ? { ...x, abreviatura: e.target.value } : x))} />
+                          <Input value={p.hora_inicio} onChange={(e) => setPeriodos((prev) => prev.map((x, i) => i === idx ? { ...x, hora_inicio: e.target.value } : x))} className="w-28" />
+                          <Input value={p.hora_fin} onChange={(e) => setPeriodos((prev) => prev.map((x, i) => i === idx ? { ...x, hora_fin: e.target.value } : x))} className="w-28" />
+                          <Input type="number" value={p.duracion_min} onChange={(e) => setPeriodos((prev) => prev.map((x, i) => i === idx ? { ...x, duracion_min: Number(e.target.value) } : x))} className="w-24" />
                         </div>
                       ))}
                     </div>
@@ -428,6 +467,7 @@ export default function InstitucionWizard() {
                 </div>
               )}
 
+              {/* Step 3: Importador */}
               {step === 3 && (
                 <div className="space-y-4 grid grid-cols-1 lg:grid-cols-2 gap-6">
                   <div className="p-4 border rounded max-h-[60vh] overflow-auto">
@@ -475,6 +515,7 @@ export default function InstitucionWizard() {
               <div>
                 {step > 1 && <Button variant="outline" onClick={handleBack}>Atrás</Button>}
               </div>
+
               <div className="flex gap-2">
                 <Button variant="outline" onClick={() => {
                   const hasWorkNotSaved = step === 3 && importPreviewLoaded && !importPersisted;
@@ -486,9 +527,9 @@ export default function InstitucionWizard() {
                   setStep(1);
                   setImportPreviewLoaded(false);
                   setImportPersisted(false);
-                  setPreviewCargado(false);
                 }}>Cancelar</Button>
-                <Button onClick={handleFooterPrimary}>{step === 3 ? 'Finalizar' : 'Siguiente'}</Button>
+
+                <Button onClick={handleFooterPrimary}>{step === 3 ? "Finalizar" : "Siguiente"}</Button>
               </div>
             </div>
           </div>
