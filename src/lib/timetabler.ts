@@ -1,17 +1,9 @@
-// src/lib/timetabler.ts
-// Heurística MRV + backtracking para generar un timetable sencillo.
-// Notas:
-// - Este generador es intencionalmente explícito y comentado para que lo puedas ajustar.
-// - Devuelve un "timetable" por clase: array de length days*slotsPerDay con null o una asignación.
-// - Maneja duraciones en slots (bloques) y sesiones por semana.
-// - No aplica disponibilidad/periodos avanzados; puedes extenderlo.
-
+// lib/timetabler.ts
 export type LessonItem = {
-  id: string; // unique
+  id: string;
   cargaId: string;
   claseId: string;
-   // 👁️ SOLO PARA UI / DEBUG
-  claseNombre: string;
+  claseNombre?: string;
   asignaturaId: string;
   docenteId?: string | null;
   duracion: number; // duracion en slots (>=1)
@@ -20,18 +12,23 @@ export type LessonItem = {
 export type TimetableCell = {
   cargaId: string;
   asignaturaId: string;
+  asignaturaNombre?: string; // opcional si quieres nombres en vez de ids
   docenteId?: string | null;
+  docenteNombre?: string | null; // opcional
   claseId: string;
+  duracion?: number;
 };
 
 export type TimetableResult = {
-  timetableByClase: Record<string, Array<TimetableCell | null>>; // claseId -> array slots
+  timetableByClase: Record<string, Array<TimetableCell | null>>;
   success: boolean;
+  unplaced?: string[];
   stats: {
     lessonsTotal: number;
     assigned: number;
     backtracks: number;
     timeMs: number;
+    greedyAssigned: number;
   };
 };
 
@@ -40,29 +37,25 @@ function slotIndex(day: number, period: number, slotsPerDay: number) {
 }
 
 export function generateTimetable(
-  institucionId: string | null, // solo para logging
+  institucionId: string | null,
   classes: { id: string; nombre?: string }[],
-  lessons: LessonItem[], // already expanded: each lesson is 1 session to schedule with given duracion
+  lessons: LessonItem[],
   days: number,
   slotsPerDay: number,
   options?: { maxBacktracks?: number; timeLimitMs?: number }
 ): TimetableResult {
-  const maxBacktracks = options?.maxBacktracks ?? 200000;
-  const timeLimitMs = options?.timeLimitMs ?? 10000;
+  const maxBacktracks = options?.maxBacktracks ?? 300000;
+  const timeLimitMs = options?.timeLimitMs ?? 30000;
 
   const startTime = Date.now();
-
   const totalSlots = days * slotsPerDay;
 
-  // Initialize timetable arrays per class
   const timetableByClase: Record<string, Array<TimetableCell | null>> = {};
   for (const c of classes) timetableByClase[c.id] = Array(totalSlots).fill(null);
 
-  // Helper: check if a lesson (duration d) can be placed for claseId starting at (day, period)
-  function canPlace(claseId: string, startPeriod: number, dur: number) {
-    // must fit within the same day
-    const day = Math.floor(startPeriod / slotsPerDay);
-    const periodInDay = startPeriod % slotsPerDay;
+  function canPlace(claseId: string, startSlot: number, dur: number) {
+    const day = Math.floor(startSlot / slotsPerDay);
+    const periodInDay = startSlot % slotsPerDay;
     if (periodInDay + dur > slotsPerDay) return false;
     const arr = timetableByClase[claseId];
     for (let p = 0; p < dur; p++) {
@@ -71,13 +64,12 @@ export function generateTimetable(
     return true;
   }
 
-  // Helper: check teacher availability for slot range
-  function teacherFree(docenteId: string | undefined | null, startPeriod: number, dur: number) {
+  function teacherFree(docenteId: string | undefined | null, startSlot: number, dur: number) {
     if (!docenteId) return true;
+    const day = Math.floor(startSlot / slotsPerDay);
+    const periodInDay = startSlot % slotsPerDay;
     for (const claseId of Object.keys(timetableByClase)) {
       const arr = timetableByClase[claseId];
-      const day = Math.floor(startPeriod / slotsPerDay);
-      const periodInDay = startPeriod % slotsPerDay;
       for (let p = 0; p < dur; p++) {
         const cell = arr[slotIndex(day, periodInDay + p, slotsPerDay)];
         if (cell && cell.docenteId === docenteId) return false;
@@ -86,107 +78,173 @@ export function generateTimetable(
     return true;
   }
 
-  // Precompute all possible start slots for each lesson (domain)
   const lessonDomains: Map<string, number[]> = new Map();
   for (const L of lessons) {
     const domain: number[] = [];
-    for (let day = 0; day < days; day++) {
+    for (let d = 0; d < days; d++) {
       for (let p = 0; p < slotsPerDay; p++) {
-        const startIdx = slotIndex(day, p, slotsPerDay);
-        if (p + L.duracion <= slotsPerDay) domain.push(startIdx);
+        if (p + L.duracion <= slotsPerDay) {
+          domain.push(slotIndex(d, p, slotsPerDay));
+        }
       }
     }
     lessonDomains.set(L.id, domain);
   }
 
-  // Order lessons by heuristic: smallest domain first (MRV), then larger dur first
-  const lessonsSorted = [...lessons].sort((a, b) => {
+  const lessonsForGreedy = [...lessons].sort((a, b) => {
+    const da = lessonDomains.get(a.id)?.length ?? 0;
+    const db = lessonDomains.get(b.id)?.length ?? 0;
+    if (a.duracion !== b.duracion) return b.duracion - a.duracion;
+    return da - db;
+  });
+
+  let greedyAssigned = 0;
+  const assignedMap = new Map<string, number>();
+
+  for (const L of lessonsForGreedy) {
+    const domain = lessonDomains.get(L.id) ?? [];
+    let placed = false;
+    for (const start of domain) {
+      if (!L.claseId) break;
+      if (!canPlace(L.claseId, start, L.duracion)) continue;
+      if (!teacherFree(L.docenteId, start, L.duracion)) continue;
+      const day = Math.floor(start / slotsPerDay);
+      const periodInDay = start % slotsPerDay;
+
+      // IMPORTANT: write SAME object into each slot and include duracion
+      const cellObj: TimetableCell = {
+        cargaId: L.cargaId,
+        asignaturaId: L.asignaturaId,
+        docenteId: L.docenteId ?? null,
+        claseId: L.claseId,
+        duracion: L.duracion,
+      };
+
+      for (let p = 0; p < L.duracion; p++) {
+        timetableByClase[L.claseId][slotIndex(day, periodInDay + p, slotsPerDay)] = cellObj;
+      }
+      assignedMap.set(L.id, start);
+      greedyAssigned++;
+      placed = true;
+      break;
+    }
+  }
+
+  const remainingLessons = lessons.filter(L => !assignedMap.has(L.id));
+
+  if (remainingLessons.length === 0) {
+    const assigned = Object.values(timetableByClase).reduce((acc, arr) => acc + arr.filter(Boolean).length, 0);
+    return {
+      timetableByClase,
+      success: true,
+      unplaced: [],
+      stats: {
+        lessonsTotal: lessons.length,
+        assigned,
+        backtracks: 0,
+        timeMs: Date.now() - startTime,
+        greedyAssigned,
+      },
+    };
+  }
+
+  let backtracks = 0;
+  const lessonsSorted = [...remainingLessons].sort((a, b) => {
     const da = lessonDomains.get(a.id)!.length;
     const db = lessonDomains.get(b.id)!.length;
     if (da !== db) return da - db;
     return b.duracion - a.duracion;
   });
 
-  let backtracks = 0;
-  const assignments: Map<string, number> = new Map(); // lessonId -> startSlot
+  function computeDomainFiltered(lesson: LessonItem) {
+    const domain = lessonDomains.get(lesson.id) ?? [];
+    const filtered: number[] = [];
+    for (const start of domain) {
+      if (!lesson.claseId) continue;
+      if (!canPlace(lesson.claseId, start, lesson.duracion)) continue;
+      if (!teacherFree(lesson.docenteId, start, lesson.duracion)) continue;
+      filtered.push(start);
+    }
+    return filtered;
+  }
 
-  // Backtracking recursive
-  function backtrack(idx: number): boolean {
-    if (Date.now() - startTime > timeLimitMs) return false;
+  const assignments = new Map<string, number>();
+
+  function backtrack(idx: number, timeLimitMsLocal: number): boolean {
+    if (Date.now() - startTime > timeLimitMsLocal) return false;
     if (backtracks > maxBacktracks) return false;
     if (idx >= lessonsSorted.length) return true;
 
     const L = lessonsSorted[idx];
-    // recompute domain ordering with simple preference: earlier days first, prefer mornings (lower period)
-    const domain = (lessonDomains.get(L.id) || []).slice();
+    const domain = computeDomainFiltered(L);
 
-    // Shuffle/order domain if needed. Keep deterministic: already ordered by day/period.
+    if (domain.length === 0) return false;
 
     for (const start of domain) {
-      // conflict checks
-      if (!canPlace(L.claseId, start, L.duracion)) continue;
-      if (!teacherFree(L.docenteId, start, L.duracion)) continue;
-
-      // place: mark cells
       const day = Math.floor(start / slotsPerDay);
       const periodInDay = start % slotsPerDay;
+
+      const cellObj: TimetableCell = {
+        cargaId: L.cargaId,
+        asignaturaId: L.asignaturaId,
+        docenteId: L.docenteId ?? null,
+        claseId: L.claseId,
+        duracion: L.duracion,
+      };
+
       for (let p = 0; p < L.duracion; p++) {
-        timetableByClase[L.claseId][slotIndex(day, periodInDay + p, slotsPerDay)] = {
-          cargaId: L.cargaId,
-          asignaturaId: L.asignaturaId,
-          docenteId: L.docenteId ?? null,
-          claseId: L.claseId,
-        };
+        timetableByClase[L.claseId][slotIndex(day, periodInDay + p, slotsPerDay)] = cellObj;
       }
       assignments.set(L.id, start);
 
-      // forward-check: quick prune — ensure remaining lessons still have at least one possible placement
-      let ok = true;
+      let forwardOk = true;
       for (let j = idx + 1; j < lessonsSorted.length; j++) {
         const LJ = lessonsSorted[j];
-        const dom = lessonDomains.get(LJ.id)!;
-        let found = false;
-        for (const s of dom) {
-          if (canPlace(LJ.claseId, s, LJ.duracion) && teacherFree(LJ.docenteId, s, LJ.duracion)) {
-            found = true;
-            break;
-          }
-        }
-        if (!found) {
-          ok = false;
+        const domJ = computeDomainFiltered(LJ);
+        if (domJ.length === 0) {
+          forwardOk = false;
           break;
         }
       }
 
-      if (ok) {
-        if (backtrack(idx + 1)) return true;
+      if (forwardOk) {
+        if (backtrack(idx + 1, timeLimitMsLocal)) return true;
       }
 
-      // undo placement
       for (let p = 0; p < L.duracion; p++) {
         timetableByClase[L.claseId][slotIndex(day, periodInDay + p, slotsPerDay)] = null;
       }
       assignments.delete(L.id);
       backtracks++;
-      if (Date.now() - startTime > timeLimitMs) return false;
+      if (Date.now() - startTime > timeLimitMsLocal) return false;
       if (backtracks > maxBacktracks) return false;
     }
-
     return false;
   }
 
-  const success = backtrack(0);
+  const allowedTime = timeLimitMs;
+  const successBacktrack = backtrack(0, allowedTime);
 
-  const assigned = Object.values(timetableByClase).reduce((acc, arr) => acc + arr.filter(Boolean).length, 0);
+  const assignedTotal = Object.values(timetableByClase).reduce((acc, arr) => acc + arr.filter(Boolean).length, 0);
+  const unplaced: string[] = [];
+
+  const assignedSet = new Set<string>([...assignedMap.keys(), ...assignments.keys()]);
+  for (const L of lessons) {
+    if (!assignedSet.has(L.id)) unplaced.push(L.id);
+  }
+
+  const success = successBacktrack && unplaced.length === 0;
 
   return {
     timetableByClase,
     success,
+    unplaced,
     stats: {
       lessonsTotal: lessons.length,
-      assigned,
+      assigned: assignedTotal,
       backtracks,
       timeMs: Date.now() - startTime,
+      greedyAssigned,
     },
   };
 }

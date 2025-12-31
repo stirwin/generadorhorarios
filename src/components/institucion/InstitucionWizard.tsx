@@ -170,31 +170,53 @@ export default function InstitucionWizard() {
     }
   }
 
-  async function handleGenerateTimetable() {
-    if (!institucionSeleccionada) {
-      alert("Selecciona una institución antes de generar el horario.");
+ async function handleGenerateTimetable() {
+  if (!institucionSeleccionada) {
+    alert("Selecciona una institución antes de generar el horario.");
+    return;
+  }
+  setLoadingTimetable(true);
+  try {
+    const res = await fetch("/api/timetable/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ institucionId: institucionSeleccionada.id }),
+    });
+
+    const data = await res.json();
+
+    // DEBUG CLIENT: log completo y visible
+    console.log("generate response (raw):", data);
+
+    if (!res.ok) {
+      throw new Error(data?.error || `Status ${res.status}`);
+    }
+
+    // Validaciones rápidas en cliente
+    const keys = Object.keys(data?.timetable || {});
+    if (keys.length === 0) {
+      console.warn("generateTimetable: server returned empty timetable keys", { meta: data?.meta, stats: data?.stats });
+      // aún así asignamos un objeto vacío para evitar undefined
+      setTimetable({});
+      setTimetableStats(data?.stats ?? null);
+      // opcional: mostrar alerta al usuario
+      // alert("El servidor no devolvió claves en el timetable. Revisa logs del servidor (console).");
       return;
     }
-    setLoadingTimetable(true);
-    try {
-      const res = await fetch("/api/timetable/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ institucionId: institucionSeleccionada.id }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error ?? `Status ${res.status}`);
 
-      // Esperamos data.timetable -> Record<claseId, array de celdas>
-      setTimetable(data.timetable ?? null);
-      setTimetableStats(data.stats ?? null);
-    } catch (err: any) {
-      console.error("handleGenerateTimetable error:", err);
-      alert("No se pudo generar el horario: " + (err.message || err));
-    } finally {
-      setLoadingTimetable(false);
-    }
+    // Si todo ok, guardar el timetable (ya viene serializado como plain object)
+    setTimetable(data.timetable || {});
+    setTimetableStats(data.stats || null);
+    // opcional: mostrar meta en consola
+    console.log("generateTimetable meta:", data.meta);
+  } catch (err: any) {
+    console.error("handleGenerateTimetable error:", err);
+    alert("No se pudo generar el horario: " + (err.message || err));
+  } finally {
+    setLoadingTimetable(false);
   }
+}
+
 
   // -------------------------
   // UI helpers / memo

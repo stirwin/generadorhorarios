@@ -14,8 +14,21 @@ export async function GET() {
         asignaturas: true,
         cargas: true
       }
+
+      
     });
-    return NextResponse.json(instituciones);
+    // con prisma en node console o endpoint temporal
+//const carga = await prisma.cargaAcademica.findFirst({
+//  where: {
+//    institucionId: "cmjt41ymr0000uriv2q21sop7",
+//    //clase: { abreviatura: "601" }, // o usa id de la clase si sabes
+//    asignaturaId: "cmjm5ytez0045yykg768cjupo"
+//  },
+//  include: { asignatura: true, clase: true, docente: true }
+//});
+//console.log("essta es la carga",carga);
+
+    return NextResponse.json( instituciones );
   } catch (error) {
     console.error('Error al obtener instituciones:', error);
     return NextResponse.json(
@@ -68,6 +81,9 @@ export async function POST(request: Request) {
       },
       include: { periodos: true },
     });
+
+
+
 
     return NextResponse.json({ institucion }, { status: 201 });
   } catch (error: any) {

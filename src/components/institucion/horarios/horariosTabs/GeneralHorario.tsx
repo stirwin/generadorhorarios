@@ -1,19 +1,14 @@
+// components/horarios/views/VistaGeneralHorario.tsx
 "use client";
 
 import React, { useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import type { TimetableCell } from "@/types/institucion";
+import type { TimetableCell } from "@/lib/timetabler";
 
 export type Periodo = { indice: number; abreviatura?: string; hora_inicio?: string; hora_fin?: string; duracion_min?: number };
 export type Clase = { id: string; nombre: string };
 
-/**
- * Vista General mejorada:
- * - bloques que "span" varias columnas según duración
- * - gap entre slots
- * - colores y paddings para mejor legibilidad
- */
 export default function VistaGeneralHorario({
   institucion,
   timetableByClase,
@@ -27,15 +22,17 @@ export default function VistaGeneralHorario({
 }) {
   const dias = institucion.dias_por_semana ?? 5;
   const lecciones = institucion.lecciones_por_dia ?? 7;
+  const totalSlots = dias * lecciones;
   const diasNombres = ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"].slice(0, dias);
 
+  // map id -> clase (para mostrar nombre)
   const classesMap = useMemo(() => {
     const m: Record<string, Clase> = {};
     for (const c of classes) m[c.id] = c;
     return m;
   }, [classes]);
 
-  // helper simple para generar clases de color (determinista)
+  // helpers
   function colorClassFor(seed: string | undefined) {
     const colors = [
       "bg-blue-600", "bg-green-600", "bg-purple-600",
@@ -48,11 +45,71 @@ export default function VistaGeneralHorario({
     return colors[Math.abs(h) % colors.length];
   }
 
-  // Obtener celda segura
-  function getCell(claseId: string, idx: number) {
-    const arr = timetableByClase?.[claseId] ?? [];
-    return arr[idx] ?? null;
+  // Asegura que el array tiene la longitud totalSlots (lo rellena con null si falta)
+  function padToTotal(arr?: Array<TimetableCell | null> | null) {
+    const out = Array.isArray(arr) ? [...arr] : [];
+    if (out.length >= totalSlots) return out.slice(0, totalSlots);
+    while (out.length < totalSlots) out.push(null);
+    return out;
   }
+
+  // Si la key exacta classId no existe, intentar resolverla buscando:
+  // - una key cuyo array contenga alguna celda con claseId === classId
+  // - una key cuyo array contenga alguna celda con claseNombre === classesMap[classId].nombre
+  // (esto ayuda si el solver devolvió claves distintas)
+  function findArrayForClassId(classId: string) {
+    if (!timetableByClase) return Array(totalSlots).fill(null);
+    if (timetableByClase[classId]) return padToTotal(timetableByClase[classId]);
+
+    // buscar por coincidencia en valores de celda
+    const maybeName = classesMap[classId]?.nombre?.toString().trim().toLowerCase() ?? null;
+    for (const k of Object.keys(timetableByClase)) {
+      const arr = timetableByClase[k] ?? [];
+      if (!Array.isArray(arr)) continue;
+      // quick scan
+      for (const cell of arr) {
+        if (!cell) continue;
+        if ((cell.claseId && String(cell.claseId) === classId)) {
+          return padToTotal(arr);
+        }
+        // a veces claseId puede venir como nombre (por errores de mapping)
+        if (maybeName && ((cell.claseId && String(cell.claseId).toLowerCase() === maybeName) || (cell.asignaturaId && String(cell.asignaturaId).toLowerCase() === maybeName))) {
+          return padToTotal(arr);
+        }
+      }
+    }
+
+    // nada encontrado -> array vacío (rellenado)
+    return Array(totalSlots).fill(null);
+  }
+
+  // Normalizar todo timetable en memoria (solo para render): map classId -> array length totalSlots
+  const normalizedTimetable = useMemo(() => {
+    const normalized: Record<string, Array<TimetableCell | null>> = {};
+    for (const c of classes) {
+      normalized[c.id] = findArrayForClassId(c.id);
+    }
+    return normalized;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timetableByClase, classes, dias, lecciones]);
+
+  // Debug infos: contar slots asignados
+  const debugStats = useMemo(() => {
+    const keysFromServer = Object.keys(timetableByClase || {});
+    let assignedTotal = 0;
+    const perClass: Record<string, { assigned: number; sample: TimetableCell[] }> = {};
+    for (const c of classes) {
+      const arr = normalizedTimetable[c.id] ?? Array(totalSlots).fill(null);
+      const assigned = arr.filter(Boolean).length;
+      assignedTotal += assigned;
+      const sample = arr.filter(Boolean).slice(0, 3) as TimetableCell[];
+      perClass[c.id] = { assigned, sample };
+    }
+    return { keysFromServer, assignedTotal, perClass };
+  }, [normalizedTimetable, classes, timetableByClase, totalSlots]);
+
+  // Si no hay nada asignado visualmente, mostrar indicación y permitir inspección rápida
+  const anyAssigned = debugStats.assignedTotal > 0;
 
   return (
     <div className="p-4">
@@ -61,6 +118,8 @@ export default function VistaGeneralHorario({
         <div className="flex gap-2 items-center">
           <Button onClick={() => onGenerate?.()} variant="outline">Generar/Regenerar</Button>
           <Badge className="text-sm">Clases: {classes.length}</Badge>
+          <Badge className="text-sm">Slots: {totalSlots}</Badge>
+          <Badge className="text-sm">Asignados: {debugStats.assignedTotal}</Badge>
         </div>
       </div>
 
@@ -93,84 +152,112 @@ export default function VistaGeneralHorario({
           </thead>
 
           <tbody>
-            {classes.map(({ id: claseId }) => (
-              <tr key={claseId} className="border-t">
-                <td className="sticky left-0 bg-background z-10 p-2 font-medium border-r align-top">
-                  {classesMap[claseId]?.nombre ?? claseId}
-                </td>
+            {classes.map(({ id: claseId }) => {
+              const arr = normalizedTimetable[claseId] ?? Array(totalSlots).fill(null);
 
-                {Array.from({ length: dias }).map((_, day) => {
-                  const dayStart = day * lecciones;
+              return (
+                <tr key={claseId} className="border-t">
+                  <td className="sticky left-0 bg-background z-10 p-2 font-medium border-r align-top">
+                    {classesMap[claseId]?.nombre ?? claseId}
+                  </td>
 
-                  // Armamos los items del día: iterar slots, pero saltar los ocupados por span
-                  const items: React.ReactNode[] = [];
-                  let i = 0;
-                  while (i < lecciones) {
-                    const slotIdx = dayStart + i;
-                    const cell = getCell(claseId, slotIdx);
+                  {Array.from({ length: dias }).map((_, day) => {
+                    const dayStart = day * lecciones;
+                    const items: React.ReactNode[] = [];
+                    let i = 0;
 
-                    if (!cell) {
-                      // celda vacía de 1 slot
+                    while (i < lecciones) {
+                      const slotIdx = dayStart + i;
+                      const cell = arr[slotIdx];
+
+                      if (!cell) {
+                        items.push(
+                          <div key={`empty-${day}-${i}`} className="h-14 border rounded-sm flex items-center justify-center text-muted-foreground text-sm">
+                            &nbsp;
+                          </div>
+                        );
+                        i += 1;
+                        continue;
+                      }
+
+                      // si hay contenido, asegurarnos que duracion es number >=1
+                      const dur = Math.max(1, Number(cell.duracion ?? 1));
+                      const seed = (cell.cargaId ?? cell.asignaturaId ?? String(slotIdx)).toString();
+                      const bg = colorClassFor(seed);
+
                       items.push(
-                        <div key={`empty-${day}-${i}`} className="h-14 border rounded-sm flex items-center justify-center text-muted-foreground text-sm">
-                          &nbsp;
+                        <div
+                          key={`cell-${day}-${i}-${seed}`}
+                          style={{ gridColumn: `span ${Math.min(dur, lecciones - i)}` }}
+                          className={`${bg} text-white p-2 rounded-lg shadow-sm flex flex-col justify-center`}
+                        >
+                          <div className="font-semibold text-sm leading-tight truncate">{(cell as any).asignaturaNombre ?? cell.asignaturaId}</div>
+                          <div className="text-[11px] opacity-90 mt-1 truncate">{(cell as any).docenteNombre ?? cell.docenteId ?? "-"}</div>
+                          {dur > 1 && <div className="text-[11px] opacity-80 mt-1">{dur} slot{dur > 1 ? "s" : ""}</div>}
                         </div>
                       );
-                      i += 1;
-                      continue;
+
+                      i += Math.min(dur, lecciones - i);
                     }
 
-                    // Si hay contenido, calcular duración (clamp)
-                    const dur = Math.max(1, Math.floor(cell.duracion ?? 1));
-                    // determinar clave para detectar el bloque
-                    const seed = (cell.cargaId ?? cell.asignaturaNombre ?? cell.asignaturaId ?? String(slotIdx)).toString();
-                    const bg = colorClassFor(seed);
-
-                    items.push(
-                      <div
-                        key={`cell-${day}-${i}-${seed}`}
-                        // span columns según duración
-                        style={{ gridColumn: `span ${Math.min(dur, lecciones - i)}` }}
-                        className={`${bg} text-white p-2 rounded-lg shadow-sm flex flex-col justify-center`}
-                      >
-                        <div className="font-semibold text-sm leading-tight truncate">{cell.asignaturaNombre ?? cell.asignaturaId}</div>
-                        <div className="text-[11px] opacity-90 mt-1 truncate">{cell.docenteNombre ?? cell.docenteId ?? "-"}</div>
-                        {cell.duracion && cell.duracion > 1 && (
-                          <div className="text-[11px] opacity-80 mt-1">{cell.duracion} slot{cell.duracion > 1 ? "s" : ""}</div>
-                        )}
-                      </div>
+                    return (
+                      <td key={`${claseId}-d${day}`} className="p-2 align-top">
+                        <div
+                          className="grid items-start"
+                          style={{
+                            gridTemplateColumns: `repeat(${lecciones}, minmax(96px,1fr))`,
+                            gap: "6px",
+                            alignItems: "start",
+                          }}
+                        >
+                          {items}
+                        </div>
+                      </td>
                     );
+                  })}
 
-                    // avanzar i por la duración (las columnas internas se ocuparán por este bloque)
-                    i += Math.min(dur, lecciones - i);
-                  }
-
-                  // Render del día: grid con gap y columnas = lecciones
-                  return (
-                    <td key={`${claseId}-d${day}`} className="p-2 align-top">
-                      <div
-                        className="grid items-start"
-                        style={{
-                          gridTemplateColumns: `repeat(${lecciones}, minmax(96px,1fr))`,
-                          gap: "6px",
-                          alignItems: "start",
-                        }}
-                      >
-                        {items}
-                      </div>
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
 
-      {/* Leyenda y notas */}
-      <div className="mt-3 text-sm text-muted-foreground">
-        <div>- Las materias ocupan tantos slots como su duración (se muestran como bloques que abarcan columnas).</div>
-        <div>- Use el botón "Generar/Regenerar" para recalcular el horario desde el servidor.</div>
+      {/* Debug / diagnósticos (útil mientras depuramos) */}
+      <div className="mt-3 text-sm">
+        {!anyAssigned && (
+          <div className="mb-2 text-yellow-700 bg-yellow-50 border border-yellow-100 p-2 rounded">
+            No se detectaron slots asignados en la grilla normalizada. Revisa:
+            <ul className="pl-5 list-disc mt-2">
+              <li>Que las claves de <code>timetableByClase</code> coincidan con <code>classes[].id</code>.</li>
+              <li>Que cada array tenga longitud {totalSlots} (dias × lecciones).</li>
+              <li>Que las celdas incluyan <code>duracion</code> y <code>cargaId</code> y/o <code>asignaturaId</code>.</li>
+            </ul>
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="p-2 border rounded">
+            <div className="font-medium mb-1">Claves recibidas del servidor</div>
+            <div className="text-xs text-muted-foreground break-words">
+              {JSON.stringify(Object.keys(timetableByClase || {})).slice(0, 1000)}
+            </div>
+          </div>
+
+          <div className="p-2 border rounded">
+            <div className="font-medium mb-1">Resumen asignaciones (primeras 3 por clase)</div>
+            <div className="text-xs">
+              {classes.map((c) => {
+                const s = debugStats.perClass[c.id];
+                return (
+                  <div key={c.id} className="mb-1">
+                    <strong>{c.nombre}</strong>: {s.assigned} slots asignados • sample: {s.sample.map((x) => `${x.asignaturaId || "?"}/${String(x.docenteId||"-")}`).join(", ") || "—"}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );

@@ -11,16 +11,6 @@ export interface Clase {
   createdAt?: string;
   updatedAt?: string;
 }
-export type TimetableCell = {
-  // valores que tu generador ya pone:
-  lessonId?: string; // identificador único de la "lesson" expandida
-  asignaturaId?: string;
-  asignaturaNombre?: string;
-  docenteId?: string | null;
-  docenteNombre?: string | null;
-  duracion?: number; // en slots
-  // otros metadatos opcionales...
-};
 
 type Periodo = {
   indice: number;

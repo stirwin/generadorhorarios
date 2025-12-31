@@ -6,7 +6,8 @@ import { Save, Download, Eye } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Institucion, TimetableCell } from "@/types/institucion";
+import { Institucion } from "@/types/institucion";
+import type { TimetableCell } from "@/lib/timetabler";
 
 /**
  * Tipos mínimos esperados (ajusta a tus tipos reales)
