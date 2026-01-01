@@ -9,7 +9,6 @@ export async function POST(req: Request) {
     const institucionId = body?.institucionId;
     if (!institucionId) return NextResponse.json({ error: "institucionId requerido" }, { status: 400 });
 
-    // cargar institucion (dias/lecciones)
     const institucion = await prisma.institucion.findUnique({
       where: { id: institucionId },
       include: { periodos: true },
@@ -19,13 +18,13 @@ export async function POST(req: Request) {
     const days = institucion.dias_por_semana ?? 5;
     const slotsPerDay = institucion.lecciones_por_dia ?? 7;
 
-    // cargar cargas académicas con relaciones
+    // Cargar cargas con relaciones
     const cargas = await prisma.cargaAcademica.findMany({
       where: { institucionId },
       include: { asignatura: true, clase: true, docente: true },
     });
 
-    // --- Build mapping de cargas para poder añadir nombres a las celdas después ---
+    // Map de info por carga (para normalizar resultado)
     const cargaMap = new Map<string, {
       id: string;
       claseId: string;
@@ -42,57 +41,56 @@ export async function POST(req: Request) {
         claseId: c.claseId,
         asignaturaId: c.asignaturaId,
         asignaturaNombre: c.asignatura?.nombre ?? null,
-        docenteId: c.docenteId ?? null,
+        docenteId: c.docenteId ?? null,            // <-- usar siempre ID aquí
         docenteNombre: c.docente?.nombre ?? null,
-        duracion: (c as any).duracion_slots ?? (c as any).duracion ?? 1,
+        duracion: (c as any).duracion_slots ?? 1,
       });
     }
 
-    // Convertir a LessonItem (expandir sesiones_sem a X lecciones individuales)
+    // Construir lessons: **USAR docenteId (ID)** para constraints; incluir nombre solo para UI/debug
     const lessons: LessonItem[] = [];
     for (const c of cargas) {
-      const sesiones = (c as any).sesiones_sem ?? (c as any).cantidad ?? 1;
-      const dur = (c as any).duracion_slots ?? (c as any).duracion ?? 1;
-      for (let i = 0; i < (sesiones ?? 1); i++) {
+      const sesiones = (c as any).sesiones_sem ?? 1;
+      const dur = (c as any).duracion_slots ?? 1;
+      for (let i = 0; i < sesiones; i++) {
         lessons.push({
           id: `${c.id}__${i}`,
           cargaId: c.id,
           claseId: c.claseId,
-          // campos "UI/debug" que no afectan al algoritmo
+          // **IMPORTANTE**: usar el ID real del docente para evitar mezclas
+          docenteId: c.docenteId ?? null,
+          // los campos siguientes son solo para UI / debugging dentro de lesson
           claseNombre: c.clase?.nombre ?? String(c.claseId),
-          asignaturaId: c.asignatura?.nombre ?? c.asignaturaId,
-          docenteId: c.docente?.nombre ?? c.docenteId ?? null,
+          asignaturaId: c.asignaturaId,
           duracion: Math.max(1, Number(dur) || 1),
         });
       }
     }
 
-    // Cargar listado de clases del instituto (orden)
+    // cargar lista ordenada de clases
     const clases = await prisma.clase.findMany({ where: { institucionId } });
     const cls = clases.map((c) => ({ id: c.id, nombre: c.nombre }));
 
-    // Generar timetable (usa tu algoritmo)
+    // Ejecutar generador
     const result = generateTimetable(institucionId, cls, lessons, days, slotsPerDay, {
       maxBacktracks: 200000,
-      timeLimitMs: 30000, // subimos un poco el limite para casos grandes
+      timeLimitMs: 30000,
     });
 
-    // --- Normalizar el timetable a la forma que espera la UI ---
-    // result.timetableByClase: claseId -> array slots (cada slot: { cargaId, asignaturaId, docenteId, claseId } | null)
+    // Normalizar timetable (añadir nombres para UI)
     const normalized: Record<string, Array<any | null>> = {};
-    const assignedSet = new Set<string>();
+    const assignedCargaIds = new Set<string>();
 
     for (const [claseId, arr] of Object.entries(result.timetableByClase)) {
       normalized[claseId] = arr.map((cell: any) => {
         if (!cell) return null;
         const cm = cargaMap.get(cell.cargaId) ?? null;
-        // marcar como asignada
-        assignedSet.add(cell.cargaId);
+        if (cell.cargaId) assignedCargaIds.add(cell.cargaId);
         return {
           cargaId: cell.cargaId,
           asignaturaId: cm?.asignaturaId ?? cell.asignaturaId ?? null,
           asignaturaNombre: cm?.asignaturaNombre ?? cell.asignaturaId ?? null,
-          docenteId: cm?.docenteId ?? cell.docenteId ?? null,
+          docenteId: cm?.docenteId ?? cell.docenteId ?? null,   // ID real
           docenteNombre: cm?.docenteNombre ?? cell.docenteId ?? null,
           claseId: claseId,
           duracion: cm?.duracion ?? cell.duracion ?? 1,
@@ -100,46 +98,40 @@ export async function POST(req: Request) {
       });
     }
 
-    // --- Calcular unplaced: lecciones/lesson ids que no fueron asignadas ---
+    // Unplaced: lecciones (lesson ids) que no fueron asignadas (comparamos por cargaId)
     const unplaced: string[] = [];
     for (const L of lessons) {
-      if (!assignedSet.has(L.cargaId)) {
-        // Si la carga entera no fue asignada en ningún slot, marca las lecciones expandidas
+      if (!assignedCargaIds.has(L.cargaId)) {
         unplaced.push(L.id);
       }
     }
 
-    // --- Debugging: summary por clase (primeras 3 muestras) ---
+    // Summary por clase
     const assignedSummary: Record<string, { assignedSlots: number; sample: string | number }> = {};
     for (const c of cls) {
       const arr = normalized[c.id] ?? [];
       const assignedSlots = arr.filter(Boolean).length;
-      // sample: primer cargaId encontrado o '—'
       const first = arr.find((x: any) => x) ?? null;
       const sample = first ? `${first.asignaturaNombre ?? first.asignaturaId} / ${first.docenteNombre ?? first.docenteId}` : "—";
       assignedSummary[c.id] = { assignedSlots, sample };
     }
 
-    // Log servidor (útil)
+    // Logs útiles
     console.log("generateTimetable: result.stats", result.stats);
-    console.log("generateTimetable: timetable keys", Object.keys(normalized).length ? Object.keys(normalized).slice(0,20) : "[]");
-    // mostrar resumen primeras clases
+    console.log("generateTimetable: timetable keys", Object.keys(normalized).slice(0,50));
     console.log("generateTimetable: assignedSummary (first 10):", Object.entries(assignedSummary).slice(0,10));
 
-    // Revisa específicamente si la carga RELIGION está presente / asignada (opcional)
-    // buscamos cargas que parezcan "RELIGION" en cargaMap
+    // Log específico: cargas RELIGION
     const religionCargas = Array.from(cargaMap.values()).filter(v => (v.asignaturaNombre || "").toLowerCase().includes("relig"));
     if (religionCargas.length > 0) {
       console.log("generateTimetable: religion cargas encontradas:", religionCargas.map(r => ({ id: r.id, claseId: r.claseId, docente: r.docenteNombre })));
-      // comprobar si esas cargas están asignadas
       for (const r of religionCargas) {
         const arr = normalized[r.claseId] ?? [];
-        const found = arr.findIndex((cell) => cell && cell.cargaId === r.id);
-        console.log(`religion carga ${r.id} placed in clase ${r.claseId}: index=${found}`);
+        const foundIndex = arr.findIndex((cell: any) => cell && cell.cargaId === r.id);
+        console.log(`religion carga ${r.id} placed in clase ${r.claseId}: index=${foundIndex}`);
       }
     }
 
-    // Responder con timetable normalizado + debug
     return NextResponse.json({
       timetable: normalized,
       stats: result.stats,
@@ -151,6 +143,7 @@ export async function POST(req: Request) {
         cargasTotal: cargas.length,
       }
     }, { status: 200 });
+
   } catch (err: any) {
     console.error("generate timetable error:", err);
     return NextResponse.json({ error: err.message || String(err) }, { status: 500 });

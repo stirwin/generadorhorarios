@@ -170,12 +170,14 @@ export default function InstitucionWizard() {
     }
   }
 
- async function handleGenerateTimetable() {
+async function handleGenerateTimetable() {
   if (!institucionSeleccionada) {
     alert("Selecciona una institución antes de generar el horario.");
     return;
   }
+
   setLoadingTimetable(true);
+
   try {
     const res = await fetch("/api/timetable/generate", {
       method: "POST",
@@ -183,39 +185,103 @@ export default function InstitucionWizard() {
       body: JSON.stringify({ institucionId: institucionSeleccionada.id }),
     });
 
-    const data = await res.json();
+    // Lectura robusta del body: primero por content-type, con fallback a texto
+    const contentType = (res.headers.get("content-type") || "").toLowerCase();
+    let data: any = null;
+
+    if (contentType.includes("application/json")) {
+      try {
+        data = await res.json();
+      } catch (jsonErr) {
+        // intento alternativo: leer como texto y parsear manualmente
+        console.warn("res.json() fallo, intentando parsear manualmente:", jsonErr);
+        const txt = await res.text();
+        try {
+          data = JSON.parse(txt);
+        } catch {
+          data = txt;
+        }
+      }
+    } else {
+      // no es JSON o cabecera ausente: leer como texto y tratar de parsear
+      const txt = await res.text();
+      try {
+        data = JSON.parse(txt);
+      } catch {
+        data = txt;
+      }
+    }
 
     // DEBUG CLIENT: log completo y visible
-    console.log("generate response (raw):", data);
+    console.log("generate response (raw):", data, "status:", res.status, "content-type:", contentType);
 
+    // Si la respuesta no es OK, construir mensaje seguro y lanzar
     if (!res.ok) {
-      throw new Error(data?.error || `Status ${res.status}`);
+      let message = `Status ${res.status}`;
+
+      if (data != null) {
+        // si es objeto, revisar campos comunes de error
+        if (typeof data === "object") {
+          if (data.error) message = String(data.error);
+          else if (data.message) message = String(data.message);
+          else if (data.errors) {
+            if (Array.isArray(data.errors)) message = data.errors.join("; ");
+            else message = String(data.errors);
+          } else {
+            // stringify seguro (limitar tamaño)
+            try {
+              message = JSON.stringify(data).slice(0, 1000);
+            } catch {
+              message = String(data);
+            }
+          }
+        } else {
+          // data es texto o número
+          message = String(data).slice(0, 1000);
+        }
+      }
+
+      throw new Error(message);
     }
 
-    // Validaciones rápidas en cliente
-    const keys = Object.keys(data?.timetable || {});
+    // Guard: si data.timetable no es objeto, asignar {}
+    const returnedTimetable = (data && typeof data === "object" && data.timetable && typeof data.timetable === "object")
+      ? data.timetable
+      : (data?.timetable === null ? {} : (data?.timetable ?? {}));
+
+    setTimetable(returnedTimetable);
+    setTimetableStats(data?.stats ?? null);
+
+    // advertencia si keys vacías (útil para debug)
+    const keys = Object.keys(returnedTimetable || {});
     if (keys.length === 0) {
-      console.warn("generateTimetable: server returned empty timetable keys", { meta: data?.meta, stats: data?.stats });
-      // aún así asignamos un objeto vacío para evitar undefined
-      setTimetable({});
-      setTimetableStats(data?.stats ?? null);
-      // opcional: mostrar alerta al usuario
-      // alert("El servidor no devolvió claves en el timetable. Revisa logs del servidor (console).");
-      return;
+      console.warn("generateTimetable: server returned timetable with zero keys", { stats: data?.stats, debug: data?.debug, returned: returnedTimetable });
+    } else {
+      console.log("generateTimetable: timetable keys", keys.slice(0, 50));
     }
 
-    // Si todo ok, guardar el timetable (ya viene serializado como plain object)
-    setTimetable(data.timetable || {});
-    setTimetableStats(data.stats || null);
-    // opcional: mostrar meta en consola
-    console.log("generateTimetable meta:", data.meta);
+    // si viene debug, mostrarlo tambien
+    if (data?.debug) {
+      console.group("timetable debug");
+      try {
+        console.log("debug.lessonDomains keys (sample):", Object.keys(data.debug.lessonDomains || {}).slice(0, 20));
+        console.log("debug.lessonFilteredStarts (sample):", Object.entries(data.debug.lessonFilteredStarts || {}).slice(0, 20));
+        console.log("debug.classOccupancySample:", data.debug.classOccupancySample);
+        console.log("debug.teacherOccupancySample (sample):", Object.keys(data.debug.teacherOccupancySample || {}).slice(0, 20));
+      } catch (e) {
+        console.warn("Error mostrando debug:", e);
+      }
+      console.groupEnd();
+    }
   } catch (err: any) {
     console.error("handleGenerateTimetable error:", err);
-    alert("No se pudo generar el horario: " + (err.message || err));
+    // err puede ser Error o cualquier objeto; usar String(...) para mayor robustez
+    alert("No se pudo generar el horario: " + (err?.message ?? String(err)));
   } finally {
     setLoadingTimetable(false);
   }
 }
+
 
 
   // -------------------------
