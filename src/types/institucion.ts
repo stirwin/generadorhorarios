@@ -6,7 +6,7 @@ export type EstadoHorario =
 export interface Clase {
   id: string;
   nombre: string;
-  abreviatura: string;
+  abreviatura?: string;
   institucionId: string;
   createdAt?: string;
   updatedAt?: string;
@@ -35,4 +35,3 @@ type Periodo = {
   creadaEn?: string;
   actualizadaEn?: string;
 }
-

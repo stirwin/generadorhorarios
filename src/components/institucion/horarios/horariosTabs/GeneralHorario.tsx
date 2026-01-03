@@ -18,11 +18,14 @@ export default function VistaGeneralHorario({
   timetableByClase,
   classes,
   onGenerate,
+  // Nuevo prop opcional: contiene result.meta (timetablerMeta) del servidor
+  timetablerMeta,
 }: {
   institucion: { id: string; nombre?: string; dias_por_semana?: number; lecciones_por_dia?: number; periodos?: Periodo[] };
   timetableByClase: Record<string, Array<TimetableCell | null>> | undefined;
   classes: Clase[];
   onGenerate?: () => Promise<void> | void;
+  timetablerMeta?: any;
 }) {
   const dias = institucion.dias_por_semana ?? 5;
   const lecciones = institucion.lecciones_por_dia ?? 7;
@@ -122,6 +125,8 @@ export default function VistaGeneralHorario({
   }, [normalizedTimetable, classes, timetableByClase, totalSlots]);
 
   const anyAssigned = debugStats.assignedTotal > 0;
+  const hasServerKeys = Object.keys(timetableByClase || {}).length > 0;
+  const showNoAssignedWarning = hasServerKeys && !anyAssigned;
 
   // color generator
   function colorClassFor(seed: string | undefined) {
@@ -134,6 +139,9 @@ export default function VistaGeneralHorario({
     for (let i = 0; i < seed.length; i++) h = (h << 5) - h + seed.charCodeAt(i);
     return colors[Math.abs(h) % colors.length];
   }
+
+  // Usamos el prop timetablerMeta (si existe) para mostrar logs detallados en la vista
+  const meta = timetablerMeta ?? null;
 
   return (
     <div className="p-4">
@@ -176,7 +184,15 @@ export default function VistaGeneralHorario({
               return (
                 <tr key={claseId} className="border-t">
                   <td className="sticky left-0 bg-background z-10 p-2 font-medium border-r align-top">
-                    {classesMap[claseId]?.nombre ?? claseId}
+                    {(() => {
+                      const firstCell = (arr.find((c) => c) as any) || null;
+                      const fromMap = classesMap[claseId]?.nombre;
+                      const fromCell = firstCell?.claseNombre;
+                      // si la key del timetable es el nombre (no id), úsalo
+                      const keyLooksLikeName = !classesMap[claseId] && (claseId || "").length > 0 && !(claseId || "").startsWith("cmj");
+                      const displayName = fromMap ?? fromCell ?? (keyLooksLikeName ? claseId : claseId);
+                      return displayName;
+                    })()}
                   </td>
 
                   {Array.from({ length: dias }).map((_, day) => {
@@ -204,8 +220,11 @@ export default function VistaGeneralHorario({
                       const bg = colorClassFor(seed);
 
                       items.push(
-                        <div key={`cell-${day}-${i}-${seed}`} style={{ gridColumn: `span ${Math.min(dur, lecciones - i)}` }}
-                          className={`${bg} text-white p-2 rounded-lg shadow-sm flex flex-col justify-center`}>
+                        <div
+                          key={`cell-${day}-${i}-${seed}`}
+                          style={{ gridColumn: `span ${Math.min(dur, lecciones - i)}` }}
+                          className={`${bg} text-white p-2 rounded-lg shadow-sm flex flex-col justify-center`}
+                        >
                           <div className="font-semibold text-sm leading-tight truncate">{(cell as any).asignaturaNombre ?? cell.asignaturaId}</div>
                           <div className="text-[11px] opacity-90 mt-1 truncate">{(cell as any).docenteNombre ?? cell.docenteId ?? "-"}</div>
                           {dur > 1 && <div className="text-[11px] opacity-80 mt-1">{dur} slot{dur > 1 ? "s" : ""}</div>}
@@ -233,7 +252,7 @@ export default function VistaGeneralHorario({
 
       {/* Debug / diagnósticos */}
       <div className="mt-3 text-sm">
-        {!anyAssigned && (
+        {showNoAssignedWarning && (
           <div className="mb-2 text-yellow-700 bg-yellow-50 border border-yellow-100 p-2 rounded">
             No se detectaron slots asignados en la grilla normalizada. Revisa:
             <ul className="pl-5 list-disc mt-2">
@@ -250,6 +269,33 @@ export default function VistaGeneralHorario({
             <div className="text-xs text-muted-foreground break-words">
               {JSON.stringify(Object.keys(timetableByClase || {}), null, 2).slice(0, 3200)}
             </div>
+
+            <h3 className="mt-3 font-medium">Timetabler Meta (debug)</h3>
+            {meta ? (
+              <div style={{ maxHeight: 420, overflow: 'auto', background: '#0f172a', color: '#e6eef8', padding: 12 }}>
+                <div className="mb-2">placedByGlobalGreedy: {String(meta.placedByGlobalGreedy ?? "-")}</div>
+                <div className="mb-2">unplaced (count): {String((meta.unplaced ?? []).length ?? "-")}</div>
+
+                <details className="mb-2">
+                  <summary className="cursor-pointer">Lesson debug (click to expand)</summary>
+                  <pre style={{ whiteSpace: 'pre-wrap' }}>
+                    {JSON.stringify(meta.lessonDebug, null, 2)}
+                  </pre>
+                </details>
+
+                <details className="mb-2">
+                  <summary className="cursor-pointer">Teacher occupancy sample</summary>
+                  <pre>{JSON.stringify(meta.teacherOccupancySample, null, 2)}</pre>
+                </details>
+
+                <details className="mb-2">
+                  <summary className="cursor-pointer">Class occupancy sample</summary>
+                  <pre>{JSON.stringify(meta.classOccupancySample, null, 2)}</pre>
+                </details>
+              </div>
+            ) : (
+              <div className="text-xs text-muted-foreground">No debug meta returned. Pasa `timetablerMeta` desde el componente padre (respuesta API → debug.timetablerMeta).</div>
+            )}
           </div>
 
           <div className="p-2 border rounded">
@@ -260,16 +306,15 @@ export default function VistaGeneralHorario({
                 return (
                   <div key={c.id} className="mb-1">
                     <strong>{c.nombre}</strong>: {s.assigned} slots asignados • sample:{" "}
-{s.sample
-  .map((x) => {
-    const asignatura =
-      ((x as any).asignaturaNombre ?? x.asignaturaId) || "?";
-    const docente =
-      ((x as any).docenteNombre ?? x.docenteId) || "-";
-    return `${asignatura}/${String(docente)}`;
-  })
-  .join(", ") || "—"}
-
+                    {s.sample
+                      .map((x) => {
+                        const asignatura =
+                          ((x as any).asignaturaNombre ?? x.asignaturaId) || "?";
+                        const docente =
+                          ((x as any).docenteNombre ?? x.docenteId) || "-";
+                        return `${asignatura}/${String(docente)}`;
+                      })
+                      .join(", ") || "—"}
                   </div>
                 );
               })}

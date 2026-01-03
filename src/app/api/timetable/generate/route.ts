@@ -41,7 +41,7 @@ export async function POST(req: Request) {
         claseId: c.claseId,
         asignaturaId: c.asignaturaId,
         asignaturaNombre: c.asignatura?.nombre ?? null,
-        docenteId: c.docenteId ?? null,            // <-- usar siempre ID aquí
+        docenteId: c.docenteId ?? null,
         docenteNombre: c.docente?.nombre ?? null,
         duracion: (c as any).duracion_slots ?? 1,
       });
@@ -57,9 +57,7 @@ export async function POST(req: Request) {
           id: `${c.id}__${i}`,
           cargaId: c.id,
           claseId: c.claseId,
-          // **IMPORTANTE**: usar el ID real del docente para evitar mezclas
           docenteId: c.docenteId ?? null,
-          // los campos siguientes son solo para UI / debugging dentro de lesson
           claseNombre: c.clase?.nombre ?? String(c.claseId),
           asignaturaId: c.asignaturaId,
           duracion: Math.max(1, Number(dur) || 1),
@@ -71,40 +69,55 @@ export async function POST(req: Request) {
     const clases = await prisma.clase.findMany({ where: { institucionId } });
     const cls = clases.map((c) => ({ id: c.id, nombre: c.nombre }));
 
-    // Ejecutar generador
+    // Diagnóstico: carga total de slots por clase vs capacidad
+    const classLoad: Record<string, { requiredSlots: number; capacity: number; deficit: number }> = {};
+    for (const c of clases) {
+      classLoad[c.id] = { requiredSlots: 0, capacity: days * slotsPerDay, deficit: 0 };
+    }
+    for (const c of cargas) {
+      const slots = (c as any).sesiones_sem * (c as any).duracion_slots;
+      const entry = classLoad[c.claseId] || { requiredSlots: 0, capacity: days * slotsPerDay, deficit: 0 };
+      entry.requiredSlots += slots;
+      entry.deficit = Math.max(0, entry.requiredSlots - entry.capacity);
+      classLoad[c.claseId] = entry;
+    }
+    const overCapacityClasses = Object.entries(classLoad).filter(([, v]) => v.deficit > 0).map(([k, v]) => ({ claseId: k, ...v }));
+
+    // Ejecutar generador: habilita relaxTeacherConstraints si lo pasas en body (opcional)
     const result = generateTimetable(institucionId, cls, lessons, days, slotsPerDay, {
-      maxBacktracks: 200000,
-      timeLimitMs: 30000,
+      maxBacktracks: Number(body?.maxBacktracks) || 1600000,
+      timeLimitMs: Number(body?.timeLimitMs) || 120000,
+      relaxTeacherConstraints: Boolean(body?.relaxTeacherConstraints),
+      forcePlaceRemaining: Boolean(body?.forcePlaceRemaining), // default: false
     });
+
+    // Map de clases para nombres/abreviaturas
+    const claseNameMap = new Map<string, { nombre?: string | null }>();
+    for (const c of cls) claseNameMap.set(c.id, { nombre: c.nombre });
 
     // Normalizar timetable (añadir nombres para UI)
     const normalized: Record<string, Array<any | null>> = {};
-    const assignedCargaIds = new Set<string>();
 
     for (const [claseId, arr] of Object.entries(result.timetableByClase)) {
       normalized[claseId] = arr.map((cell: any) => {
         if (!cell) return null;
         const cm = cargaMap.get(cell.cargaId) ?? null;
-        if (cell.cargaId) assignedCargaIds.add(cell.cargaId);
         return {
           cargaId: cell.cargaId,
           asignaturaId: cm?.asignaturaId ?? cell.asignaturaId ?? null,
           asignaturaNombre: cm?.asignaturaNombre ?? cell.asignaturaId ?? null,
-          docenteId: cm?.docenteId ?? cell.docenteId ?? null,   // ID real
+          docenteId: cm?.docenteId ?? cell.docenteId ?? null,
           docenteNombre: cm?.docenteNombre ?? cell.docenteId ?? null,
           claseId: claseId,
+          claseNombre: claseNameMap.get(claseId)?.nombre ?? (cell as any)?.claseNombre ?? claseId,
           duracion: cm?.duracion ?? cell.duracion ?? 1,
         };
       });
     }
 
-    // Unplaced: lecciones (lesson ids) que no fueron asignadas (comparamos por cargaId)
-    const unplaced: string[] = [];
-    for (const L of lessons) {
-      if (!assignedCargaIds.has(L.cargaId)) {
-        unplaced.push(L.id);
-      }
-    }
+    // Unplaced: lesson ids directamente desde el generador
+    const unplaced: string[] = Array.isArray(result.unplaced) ? result.unplaced : [];
+    const assignedLessonIds = new Set<string>(lessons.map(l => l.id).filter(id => !unplaced.includes(id)));
 
     // Summary por clase
     const assignedSummary: Record<string, { assignedSlots: number; sample: string | number }> = {};
@@ -132,16 +145,38 @@ export async function POST(req: Request) {
       }
     }
 
+    // Prepare debug payload: include timetabler meta debug if present
+    const unplacedDetails: Record<string, any> = {};
+    if (Array.isArray(unplaced) && result.meta?.lessonDebug) {
+      for (const lid of unplaced) {
+        unplacedDetails[lid] = result.meta.lessonDebug?.[lid] ?? null;
+      }
+    }
+
+    const debugPayload = {
+      keys: Object.keys(normalized),
+      assignedSummary,
+      unplaced,
+      unplacedDetails,
+      lessonsTotal: lessons.length,
+      assignedLessonsCount: assignedLessonIds.size,
+      cargasTotal: cargas.length,
+      timetablerMeta: result.meta ?? null,
+      classLoad,
+      overCapacityClasses,
+    };
+
+    // Also console.log debugging summary small
+    console.log("generateTimetable: debug summary:", {
+      unplacedCount: (result.unplaced ?? []).length,
+      placedByGlobalGreedy: result.meta?.placedByGlobalGreedy ?? 0,
+    });
+
     return NextResponse.json({
       timetable: normalized,
       stats: result.stats,
-      debug: {
-        keys: Object.keys(normalized),
-        assignedSummary,
-        unplaced,
-        lessonsTotal: lessons.length,
-        cargasTotal: cargas.length,
-      }
+      unplaced,
+      debug: debugPayload,
     }, { status: 200 });
 
   } catch (err: any) {

@@ -17,22 +17,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ImportadorExcel } from "../importaciones/ImportadorExcel";
-//import EstructuraHorario from "./EstructuraHorario";
 import type { Institucion as InstitucionType } from "@/types/institucion";
 import HorarioView from "./horarios/HorarioView";
-
-/**
- * InstitucionWizard
- *
- * Componente que:
- * - carga las instituciones (GET /api/instituciones)
- * - permite crear una nueva institución (POST /api/instituciones) vía wizard modal
- * - permite importar/preview mediante ImportadorExcel (paso 3)
- * - dispara la generación del timetable (POST /api/timetable/generate)
- * - muestra la EstructuraHorario (componente separado)
- *
- * Nota: adapta las rutas si las tienes diferentes.
- */
+import type { TimetableCell } from "@/lib/timetabler"; // <-- usar el tipo canonical
 
 export default function InstitucionWizard() {
   // -------------------------
@@ -64,22 +51,23 @@ export default function InstitucionWizard() {
   const [importPreviewLoaded, setImportPreviewLoaded] = useState(false);
   const [importPersisted, setImportPersisted] = useState(false);
 
-  // Timetable (resultado del generador)
-  const [timetable, setTimetable] = useState<Record<string, Array<any>> | null>(null);
+  // Timetable (resultado del generador) TIPADO correctamente
+  const [timetable, setTimetable] = useState<Record<string, Array<TimetableCell | null>> | null>(null);
   const [loadingTimetable, setLoadingTimetable] = useState(false);
   const [timetableStats, setTimetableStats] = useState<any | null>(null);
+
+  // NUEVO: metadatos / debug del timetabler (se muestran en la UI)
+  const [timetableMeta, setTimetableMeta] = useState<any | null>(null);
 
   // -------------------------
   // Efectos (carga inicial)
   // -------------------------
   useEffect(() => {
-    // cargar instituciones al montar
     async function fetchInstituciones() {
       try {
         const res = await fetch("/api/instituciones");
         if (!res.ok) throw new Error(`Error al obtener instituciones: ${res.status}`);
         const data = await res.json();
-        // Data expected to be array; adapta si responde distinto.
         const mapped: InstitucionType[] = (data || []).map((ins: any) => ({
           id: ins.id,
           nombre: ins.nombre,
@@ -87,8 +75,14 @@ export default function InstitucionWizard() {
           estadoHorario: ins.estadoHorario ?? "sin-iniciar",
           dias_por_semana: ins.dias_por_semana ?? 5,
           lecciones_por_dia: ins.lecciones_por_dia ?? 7,
-          // Mantener cualquier campo extra como clases
-          clases: ins.clases ?? [],
+          clases: Array.isArray(ins.clases)
+            ? ins.clases.map((c: any) => ({
+                id: c.id,
+                nombre: c.nombre ?? c.abreviatura ?? String(c.id),
+                abreviatura: c.abreviatura ?? "",
+                institucionId: c.institucionId ?? ins.id,
+              }))
+            : [],
         }));
         setInstituciones(mapped);
         setInstitucionSeleccionada(mapped[0] ?? null);
@@ -102,14 +96,33 @@ export default function InstitucionWizard() {
 
   // Ajustar periodos cuando cambian leccionesPorDia
   useEffect(() => {
+    const startMinutes = 6 * 60; // 06:00
+    const dur = 60; // minutos por defecto (1 hora)
+    const toHHMM = (m: number) => {
+      const hh = Math.floor(m / 60).toString().padStart(2, "0");
+      const mm = (m % 60).toString().padStart(2, "0");
+      return `${hh}:${mm}`;
+    };
     setPeriodos((prev) => {
-      if (prev.length === leccionesPorDia) return prev;
-      return Array.from({ length: leccionesPorDia }).map((_, i) => prev[i] ?? {
-        indice: i + 1,
-        abreviatura: String(i + 1),
-        hora_inicio: "08:00",
-        hora_fin: "08:45",
-        duracion_min: 45,
+      return Array.from({ length: leccionesPorDia }).map((_, i) => {
+        const ini = startMinutes + i * dur;
+        const fin = ini + dur;
+        const base = {
+          indice: i + 1,
+          abreviatura: String(i + 1),
+          hora_inicio: toHHMM(ini),
+          hora_fin: toHHMM(fin),
+          duracion_min: dur,
+        };
+        const existing = prev[i];
+        // Si el periodo existente solo tiene los defaults 08:00-08:45, remplaza; si el usuario ya editó, conserva.
+        if (!existing) return base;
+        const looksDefault =
+          (!existing.hora_inicio && !existing.hora_fin) ||
+          (existing.hora_inicio === "08:00" && existing.hora_fin === "08:45") ||
+          (existing.hora_inicio === "06:00" && existing.hora_fin === "06:45");
+        if (looksDefault) return { ...existing, ...base };
+        return existing;
       });
     });
   }, [leccionesPorDia]);
@@ -140,25 +153,22 @@ export default function InstitucionWizard() {
         throw new Error(message);
       }
 
-      // Construir objeto InstitucionType mínimo para la UI
       const nueva: InstitucionType = {
-      id: data.institucion.id,
-  nombre: data.institucion.nombre,
-  nivel: cicloEscolar,
-  cicloEscolar: cicloEscolar, // Agregado
-  estadoHorario: "sin-iniciar",
-  dias_por_semana: diasPorSemana,
-  diasPorSemana: diasPorSemana, // Agregado
-  lecciones_por_dia: leccionesPorDia,
-  leccionesPorDia: leccionesPorDia, // Agregado
-  clases: [] // Inicializamos como array vacío
+        id: data.institucion.id,
+        nombre: data.institucion.nombre,
+        nivel: cicloEscolar,
+        cicloEscolar: cicloEscolar,
+        estadoHorario: "sin-iniciar",
+        dias_por_semana: diasPorSemana,
+        diasPorSemana: diasPorSemana,
+        lecciones_por_dia: leccionesPorDia,
+        leccionesPorDia: leccionesPorDia,
+        clases: []
       };
 
-      // Prepend a la lista y seleccionar
       setInstituciones((prev) => [nueva, ...prev]);
       setInstitucionSeleccionada(nueva);
 
-      // Reset flags de import
       setImportPreviewLoaded(false);
       setImportPersisted(false);
 
@@ -170,31 +180,37 @@ export default function InstitucionWizard() {
     }
   }
 
-async function handleGenerateTimetable() {
-  if (!institucionSeleccionada) {
-    alert("Selecciona una institución antes de generar el horario.");
-    return;
-  }
+  async function handleGenerateTimetable() {
+    if (!institucionSeleccionada) {
+      alert("Selecciona una institución antes de generar el horario.");
+      return;
+    }
 
-  setLoadingTimetable(true);
+    setLoadingTimetable(true);
 
-  try {
-    const res = await fetch("/api/timetable/generate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ institucionId: institucionSeleccionada.id }),
-    });
+    try {
+      const res = await fetch("/api/timetable/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ institucionId: institucionSeleccionada.id }),
+      });
 
-    // Lectura robusta del body: primero por content-type, con fallback a texto
-    const contentType = (res.headers.get("content-type") || "").toLowerCase();
-    let data: any = null;
+      const contentType = (res.headers.get("content-type") || "").toLowerCase();
+      let data: any = null;
 
-    if (contentType.includes("application/json")) {
-      try {
-        data = await res.json();
-      } catch (jsonErr) {
-        // intento alternativo: leer como texto y parsear manualmente
-        console.warn("res.json() fallo, intentando parsear manualmente:", jsonErr);
+      if (contentType.includes("application/json")) {
+        try {
+          data = await res.json();
+        } catch (jsonErr) {
+          console.warn("res.json() fallo, intentando parsear manualmente:", jsonErr);
+          const txt = await res.text();
+          try {
+            data = JSON.parse(txt);
+          } catch {
+            data = txt;
+          }
+        }
+      } else {
         const txt = await res.text();
         try {
           data = JSON.parse(txt);
@@ -202,96 +218,80 @@ async function handleGenerateTimetable() {
           data = txt;
         }
       }
-    } else {
-      // no es JSON o cabecera ausente: leer como texto y tratar de parsear
-      const txt = await res.text();
-      try {
-        data = JSON.parse(txt);
-      } catch {
-        data = txt;
-      }
-    }
 
-    // DEBUG CLIENT: log completo y visible
-    console.log("generate response (raw):", data, "status:", res.status, "content-type:", contentType);
+      console.log("generate response (raw):", data, "status:", res.status, "content-type:", contentType);
 
-    // Si la respuesta no es OK, construir mensaje seguro y lanzar
-    if (!res.ok) {
-      let message = `Status ${res.status}`;
-
-      if (data != null) {
-        // si es objeto, revisar campos comunes de error
-        if (typeof data === "object") {
-          if (data.error) message = String(data.error);
-          else if (data.message) message = String(data.message);
-          else if (data.errors) {
-            if (Array.isArray(data.errors)) message = data.errors.join("; ");
-            else message = String(data.errors);
-          } else {
-            // stringify seguro (limitar tamaño)
-            try {
-              message = JSON.stringify(data).slice(0, 1000);
-            } catch {
-              message = String(data);
+      if (!res.ok) {
+        let message = `Status ${res.status}`;
+        if (data != null) {
+          if (typeof data === "object") {
+            if (data.error) message = String(data.error);
+            else if (data.message) message = String(data.message);
+            else if (data.errors) {
+              if (Array.isArray(data.errors)) message = data.errors.join("; ");
+              else message = String(data.errors);
+            } else {
+              try { message = JSON.stringify(data).slice(0, 1000); } catch { message = String(data); }
             }
+          } else {
+            message = String(data).slice(0, 1000);
           }
-        } else {
-          // data es texto o número
-          message = String(data).slice(0, 1000);
         }
+        throw new Error(message);
       }
 
-      throw new Error(message);
-    }
+      const returnedTimetable = (data && typeof data === "object" && data.timetable && typeof data.timetable === "object")
+        ? (data.timetable as Record<string, Array<TimetableCell | null>>)
+        : (data?.timetable === null ? {} : (data?.timetable ?? {}));
 
-    // Guard: si data.timetable no es objeto, asignar {}
-    const returnedTimetable = (data && typeof data === "object" && data.timetable && typeof data.timetable === "object")
-      ? data.timetable
-      : (data?.timetable === null ? {} : (data?.timetable ?? {}));
+      // guardado tipado del timetable
+      setTimetable(returnedTimetable);
 
-    setTimetable(returnedTimetable);
-    setTimetableStats(data?.stats ?? null);
+      // Agrega conteo de no asignadas para mostrarlo rápido en UI
+      const unplacedFromServer = Array.isArray(data?.unplaced) ? data.unplaced : (Array.isArray(data?.debug?.unplaced) ? data.debug.unplaced : []);
+      setTimetableStats(data?.stats ? { ...data.stats, unplacedCount: unplacedFromServer.length } : null);
 
-    // advertencia si keys vacías (útil para debug)
-    const keys = Object.keys(returnedTimetable || {});
-    if (keys.length === 0) {
-      console.warn("generateTimetable: server returned timetable with zero keys", { stats: data?.stats, debug: data?.debug, returned: returnedTimetable });
-    } else {
-      console.log("generateTimetable: timetable keys", keys.slice(0, 50));
-    }
+      // ---------- NUEVO: extraer metadatos / debug ----------
+      const metaCandidate = data?.meta ?? data?.debug?.timetablerMeta ?? data?.debug ?? null;
+      setTimetableMeta(metaCandidate);
+      console.log("timetable meta (candidate):", metaCandidate);
 
-    // si viene debug, mostrarlo tambien
-    if (data?.debug) {
-      console.group("timetable debug");
-      try {
-        console.log("debug.lessonDomains keys (sample):", Object.keys(data.debug.lessonDomains || {}).slice(0, 20));
-        console.log("debug.lessonFilteredStarts (sample):", Object.entries(data.debug.lessonFilteredStarts || {}).slice(0, 20));
-        console.log("debug.classOccupancySample:", data.debug.classOccupancySample);
-        console.log("debug.teacherOccupancySample (sample):", Object.keys(data.debug.teacherOccupancySample || {}).slice(0, 20));
-      } catch (e) {
-        console.warn("Error mostrando debug:", e);
+      const keys = Object.keys(returnedTimetable || {});
+      if (keys.length === 0) {
+        console.warn("generateTimetable: server returned timetable with zero keys", { stats: data?.stats, debug: data?.debug, returned: returnedTimetable });
+      } else {
+        console.log("generateTimetable: timetable keys", keys.slice(0, 50));
       }
-      console.groupEnd();
+
+      if (data?.debug) {
+        console.group("timetable debug");
+        try {
+          const meta = data.debug?.timetablerMeta ?? {};
+          console.log("debug.unplaced (ids):", data.debug?.unplaced || []);
+          console.log("debug.unplacedDetails (first 3):", Object.entries(data.debug?.unplacedDetails || {}).slice(0, 3));
+          console.log("meta.lessonDebug keys (sample):", Object.keys(meta.lessonDebug || {}).slice(0, 20));
+          console.log("meta.teacherOccupancySample (sample):", Object.keys(meta.teacherOccupancySample || {}).slice(0, 20));
+          console.log("meta.teacherSlotDetail (sample for Martha Orozco):", meta.teacherSlotDetail?.['cmjm5ytda001vyykgx2jca3w9'] || []);
+          console.log("meta.classOccupancySample (sample keys):", Object.keys(meta.classOccupancySample || {}).slice(0, 20));
+        } catch (e) {
+          console.warn("Error mostrando debug:", e);
+        }
+        console.groupEnd();
+      }
+    } catch (err: any) {
+      console.error("handleGenerateTimetable error:", err);
+      alert("No se pudo generar el horario: " + (err?.message ?? String(err)));
+    } finally {
+      setLoadingTimetable(false);
     }
-  } catch (err: any) {
-    console.error("handleGenerateTimetable error:", err);
-    // err puede ser Error o cualquier objeto; usar String(...) para mayor robustez
-    alert("No se pudo generar el horario: " + (err?.message ?? String(err)));
-  } finally {
-    setLoadingTimetable(false);
   }
-}
-
-
 
   // -------------------------
   // UI helpers / memo
   // -------------------------
-  // Map id -> { id, nombre } (usado por EstructuraHorario para mostrar nombre por id)
   const classesMap = useMemo(() => {
     const map: Record<string, { id: string; nombre: string }> = {};
     for (const c of institucionSeleccionada?.clases ?? []) {
-      // Asegurarse que la clase tiene id y nombre
       if (c?.id) {
         map[c.id] = { id: c.id, nombre: c.nombre ?? String(c.id) };
       }
@@ -299,19 +299,14 @@ async function handleGenerateTimetable() {
     return map;
   }, [institucionSeleccionada?.clases]);
 
-  // Badge helper
   const badgeForEstado = (estado: InstitucionType["estadoHorario"]) => {
     if (estado === "creado") return <Badge>Creado</Badge>;
     if (estado === "en-progreso") return <Badge>En progreso</Badge>;
     return <Badge variant="outline">Sin iniciar</Badge>;
   };
 
-  // -------------------------
-  // Wizard handlers
-  // -------------------------
   const handleNext = async () => {
     if (step === 1) return setStep(2);
-
     if (step === 2) {
       if (!nombreEscuela.trim()) { alert("El nombre de la escuela es requerido"); return; }
       if (!cicloEscolar.trim()) { alert("El ciclo escolar es requerido"); return; }
@@ -320,9 +315,7 @@ async function handleGenerateTimetable() {
     }
   };
 
-  const handleBack = () => {
-    if (step > 1) setStep(step - 1);
-  };
+  const handleBack = () => { if (step > 1) setStep(step - 1); };
 
   const handleFooterPrimary = async () => {
     if (step === 3) {
@@ -347,7 +340,7 @@ async function handleGenerateTimetable() {
   // -------------------------
   return (
     <div className="flex h-screen bg-background">
-      {/* Sidebar simple */}
+      {/* Sidebar */}
       <aside className="w-60 border-r">
         <div className="p-4 border-b">Menu</div>
         <div className="p-4 space-y-2">
@@ -364,9 +357,9 @@ async function handleGenerateTimetable() {
                       setInstitucionSeleccionada(ins);
                       setImportPreviewLoaded(false);
                       setImportPersisted(false);
-                      // reset timetable if institution changes
                       setTimetable(null);
                       setTimetableStats(null);
+                      setTimetableMeta(null);
                     }}
                   >
                     <div className="flex justify-between items-center">
@@ -388,7 +381,6 @@ async function handleGenerateTimetable() {
           <h1 className="text-2xl font-bold mb-4">Dashboard de Institución</h1>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-            {/* Institución seleccionada */}
             <Card>
               <CardHeader>
                 <CardTitle>Institución seleccionada</CardTitle>
@@ -405,7 +397,6 @@ async function handleGenerateTimetable() {
               </CardFooter>
             </Card>
 
-            {/* Importador */}
             <Card>
               <CardHeader>
                 <CardTitle>Importar datos</CardTitle>
@@ -427,7 +418,6 @@ async function handleGenerateTimetable() {
               </CardFooter>
             </Card>
 
-            {/* Estado y generación */}
             <Card>
               <CardHeader>
                 <CardTitle>Estado del horario</CardTitle>
@@ -447,7 +437,9 @@ async function handleGenerateTimetable() {
 
                   {timetableStats && (
                     <div className="text-sm text-muted-foreground">
-                      {timetableStats.assigned}/{timetableStats.lessonsTotal} asignadas • backtracks: {timetableStats.backtracks}
+                      {timetableStats.assigned}/{timetableStats.lessonsTotal} asignadas
+                      {typeof timetableStats.unplacedCount === "number" ? ` • sin asignar: ${timetableStats.unplacedCount}` : ""}
+                      {" • backtracks: "}{timetableStats.backtracks}
                     </div>
                   )}
                 </div>
@@ -455,56 +447,49 @@ async function handleGenerateTimetable() {
             </Card>
           </div>
 
-          {/* Estructura del horario (componente separado) */}
           <HorarioView
             institucion={institucionSeleccionada}
             timetableByClase={timetable ?? undefined}
-            onGenerate={handleGenerateTimetable} // opcional: ya tienes la función
+            onGenerate={handleGenerateTimetable}
+            // NUEVO: prop con metadatos/diagnóstico que pasamos a las vistas de horarios
+            timetablerMeta={timetableMeta}
           />
         </div>
       </main>
 
-      {/* Wizard modal: creado/config/importar */}
+      {/* Wizard modal */}
       <Dialog
         open={wizardOpen}
         onOpenChange={(open) => {
           setWizardOpen(open);
           if (!open) {
-            // reset wizard state when closed
             setStep(1);
             setImportPreviewLoaded(false);
             setImportPersisted(false);
           }
         }}
       >
-      
-
         <DialogContent
           className="max-w-[1400px] sm:max-w-[1400px] w-[98vw] h-[92vh] p-0 overflow-hidden rounded-lg"
           style={{ boxShadow: "0 12px 30px rgba(0,0,0,0.15)" }}
         >
           <div className="flex flex-col h-full">
-            {/* Header */}
             <div className="p-6 border-b">
               <DialogHeader>
                 <DialogTitle className="text-lg">Crear nueva institución</DialogTitle>
-                <DialogDescription className="text-sm">Asistente de 3 pasos para configurar la institución y subir los datos.</DialogDescription>
+                <DialogDescription className="text-sm">Asistente de 3 pasos para configurar la institución y subir el Excel.</DialogDescription>
               </DialogHeader>
               <div className="mt-2 text-sm text-muted-foreground">Paso {step} de 3</div>
             </div>
 
-            {/* Body */}
             <div className="flex-1 overflow-auto p-6 modal-body">
-              {/* Step 1 */}
+              {/* ... contenido wizard (igual que antes) ... */}
               {step === 1 && (
                 <div className="space-y-4">
-                  <p className="text-sm text-muted-foreground">
-                    Bienvenido: este asistente te guiará para crear la institución, definir los periodos y subir el Excel.
-                  </p>
+                  <p className="text-sm text-muted-foreground">Bienvenido: este asistente te guiará para crear la institución, definir los periodos y subir el Excel.</p>
                 </div>
               )}
 
-              {/* Step 2: Configuración */}
               {step === 2 && (
                 <div className="space-y-4 max-w-full">
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -547,7 +532,6 @@ async function handleGenerateTimetable() {
                           <Input value={p.abreviatura} onChange={(e) => setPeriodos((prev) => prev.map((x, i) => i === idx ? { ...x, abreviatura: e.target.value } : x))} />
                           <Input value={p.hora_inicio} onChange={(e) => setPeriodos((prev) => prev.map((x, i) => i === idx ? { ...x, hora_inicio: e.target.value } : x))} className="w-28" />
                           <Input value={p.hora_fin} onChange={(e) => setPeriodos((prev) => prev.map((x, i) => i === idx ? { ...x, hora_fin: e.target.value } : x))} className="w-28" />
-                          <Input type="number" value={p.duracion_min} onChange={(e) => setPeriodos((prev) => prev.map((x, i) => i === idx ? { ...x, duracion_min: Number(e.target.value) } : x))} className="w-24" />
                         </div>
                       ))}
                     </div>
@@ -555,7 +539,6 @@ async function handleGenerateTimetable() {
                 </div>
               )}
 
-              {/* Step 3: Importador */}
               {step === 3 && (
                 <div className="space-y-4 grid grid-cols-1 lg:grid-cols-2 gap-6">
                   <div className="p-4 border rounded max-h-[60vh] overflow-auto">
@@ -575,7 +558,6 @@ async function handleGenerateTimetable() {
                     <div className="text-sm text-muted-foreground mb-4">
                       Aquí se mostrará el resumen del preview, errores y recomendaciones.
                     </div>
-
                     <div className="mb-4">
                       <h5 className="font-medium">Checklist</h5>
                       <ul className="list-disc pl-5 text-sm mt-2">
@@ -585,7 +567,6 @@ async function handleGenerateTimetable() {
                         <li>Persistir para finalizar</li>
                       </ul>
                     </div>
-
                     <div>
                       <h5 className="font-medium">Estado actual</h5>
                       <div className="mt-2">
@@ -598,7 +579,6 @@ async function handleGenerateTimetable() {
               )}
             </div>
 
-            {/* Footer */}
             <div className="p-4 border-t bg-background flex justify-between">
               <div>
                 {step > 1 && <Button variant="outline" onClick={handleBack}>Atrás</Button>}
