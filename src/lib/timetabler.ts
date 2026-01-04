@@ -160,6 +160,21 @@ export function generateTimetable(
     return cnt;
   }
 
+  // carga del docente por día (evita apilar muchas horas el mismo día)
+  function teacherDayLoad(docenteId: string | undefined | null, day: number) {
+    if (!docenteId) return 0;
+    let cnt = 0;
+    const dayStart = day * slotsPerDay;
+    const dayEnd = dayStart + slotsPerDay;
+    for (const arr of Object.values(timetableByClase)) {
+      for (let i = dayStart; i < dayEnd; i++) {
+        const cell = arr[i];
+        if (cell && cell.docenteId === docenteId) cnt++;
+      }
+    }
+    return cnt;
+  }
+
   function removeCell(claseId: string, startSlot: number, dur: number) {
     const day = Math.floor(startSlot / slotsPerDay);
     const periodInDay = startSlot % slotsPerDay;
@@ -312,6 +327,8 @@ export function generateTimetable(
     teacherPenalty: 5000, // large penalty if teacher busy and relaxTeacher true
     unlock: 12,
     endOfDayBonus: -3,
+    classDayLoad: 2,
+    teacherDayLoad: 2,
   };
 
   // per-lesson debug
@@ -379,6 +396,8 @@ export function generateTimetable(
     const endOfDay = (periodInDay >= slotsPerDay - 2) ? 1 : 0;
     const unlockPenalty = estimateDomainLossIfPlaced(L, start, blocked);
     const teacherPenalty = teacherFree ? 0 : WEIGHTS.teacherPenalty;
+    const classDayLoad = dayLoadForClass(L.claseId, day);
+    const teacherDay = teacherDayLoad(L.docenteId ?? null, day);
 
     const score =
       frag * WEIGHTS.frag +
@@ -386,7 +405,9 @@ export function generateTimetable(
       adj * WEIGHTS.adj +
       endOfDay * WEIGHTS.endOfDayBonus +
       teacherPenalty +
-      unlockPenalty * WEIGHTS.unlock;
+      unlockPenalty * WEIGHTS.unlock +
+      classDayLoad * WEIGHTS.classDayLoad +
+      teacherDay * WEIGHTS.teacherDayLoad;
 
     return score + (start / 10000);
   }
@@ -1084,6 +1105,256 @@ export function generateTimetable(
   let assignedLessonsCount = assignedSetFinal.size;
   unplacedList = lessons.filter(L => !assignedSetFinal.has(L.id)).map(L => L.id);
 
+  // -------------------------
+  // Reubicador intra-clase: intenta mover un bloque existente a otro hueco libre para abrir espacio a un pendiente
+  // -------------------------
+  function findBlockStartAndDur(arr: Array<TimetableCell | null>, idx: number) {
+    const cell = arr[idx];
+    if (!cell) return null;
+    let start = idx;
+    while (start - 1 >= 0 && arr[start - 1]?.cargaId === cell.cargaId) start--;
+    let dur = 0;
+    while (start + dur < arr.length && arr[start + dur]?.cargaId === cell.cargaId) dur++;
+    return { start, dur, cell };
+  }
+
+  function moveBlockWithinClass(claseId: string, blk: { start: number; dur: number; cell: TimetableCell }): boolean {
+    const arr = timetableByClase[claseId];
+    if (!arr) return false;
+    const { start, dur, cell } = blk;
+    // remove
+    for (let k = 0; k < dur; k++) arr[start + k] = null;
+    // search new slot
+    for (let d = 0; d < days; d++) {
+      for (let p = 0; p <= slotsPerDay - dur; p++) {
+        const candidate = slotIndex(d, p, slotsPerDay);
+        if (!canPlace(claseId, candidate, dur)) continue;
+        if (!teacherFreeRange(cell.docenteId ?? null, candidate, dur)) continue;
+        for (let k = 0; k < dur; k++) arr[candidate + k] = { ...cell };
+        return true;
+      }
+    }
+    // restore if fail
+    for (let k = 0; k < dur; k++) arr[start + k] = cell;
+    return false;
+  }
+
+  function tryRelocateToPlaceLesson(L: LessonItem): boolean {
+    const arr = timetableByClase[L.claseId];
+    if (!arr) return false;
+    for (let d = 0; d < days; d++) {
+      for (let p = 0; p <= slotsPerDay - L.duracion; p++) {
+        const target = slotIndex(d, p, slotsPerDay);
+        if (canPlace(L.claseId, target, L.duracion) && teacherFreeRange(L.docenteId ?? null, target, L.duracion)) {
+          placeCell(L.claseId, target, L.duracion, {
+            cargaId: L.cargaId,
+            asignaturaId: L.asignaturaId,
+            docenteId: L.docenteId ?? null,
+            claseId: L.claseId,
+            duracion: L.duracion,
+          });
+          return true;
+        }
+        // if occupied, try moving the blocking block (single bloque) elsewhere
+        const blocker = arr[target];
+        if (!blocker) continue;
+        if (blocker.docenteId === L.docenteId) continue; // no intentes mover mismo docente para no ciclar
+        const blkInfo = findBlockStartAndDur(arr, target);
+        if (!blkInfo) continue;
+        if (!moveBlockWithinClass(L.claseId, blkInfo)) continue;
+        // now check again
+        if (canPlace(L.claseId, target, L.duracion) && teacherFreeRange(L.docenteId ?? null, target, L.duracion)) {
+          placeCell(L.claseId, target, L.duracion, {
+            cargaId: L.cargaId,
+            asignaturaId: L.asignaturaId,
+            docenteId: L.docenteId ?? null,
+            claseId: L.claseId,
+            duracion: L.duracion,
+          });
+          return true;
+        }
+        // revert blocker if failed
+        moveBlockWithinClass(L.claseId, { start: blkInfo.start, dur: blkInfo.dur, cell: blkInfo.cell });
+      }
+    }
+    return false;
+  }
+
+  const stillUnplacedBeforeRelocate = [...unplacedList];
+  for (const lid of stillUnplacedBeforeRelocate) {
+    const L = lessons.find(x => x.id === lid);
+    if (!L) continue;
+    const placed = tryRelocateToPlaceLesson(L);
+    if (placed) {
+      assignedSetFinal.add(lid);
+    }
+  }
+
+  // -------------------------
+  // Reubicación cruzada por docente: mueve bloque del mismo docente en otra clase para liberar un slot
+  // -------------------------
+  function findBlockInClassByCarga(claseId: string, cargaId: string) {
+    const arr = timetableByClase[claseId];
+    if (!arr) return null;
+    for (let i = 0; i < arr.length; i++) {
+      if (arr[i]?.cargaId === cargaId) {
+        return findBlockStartAndDur(arr, i);
+      }
+    }
+    return null;
+  }
+
+  function tryCrossRelocateTeacherBlock(L: LessonItem): boolean {
+    if (!L.docenteId) return false;
+    for (let d = 0; d < days; d++) {
+      for (let p = 0; p <= slotsPerDay - L.duracion; p++) {
+        const target = slotIndex(d, p, slotsPerDay);
+        if (!canPlace(L.claseId, target, L.duracion)) continue;
+        // revisar si docente está ocupado en ese target
+        let blockerInfo: { claseId: string; blk: { start: number; dur: number; cell: TimetableCell } } | null = null;
+        for (const [cid, arr] of Object.entries(timetableByClase)) {
+          const cell = arr[target];
+          if (cell && cell.docenteId === L.docenteId) {
+            const blk = findBlockStartAndDur(arr, target);
+            if (blk) blockerInfo = { claseId: cid, blk };
+            break;
+          }
+        }
+        if (!blockerInfo) {
+          if (!teacherFreeRange(L.docenteId, target, L.duracion)) continue;
+          placeCell(L.claseId, target, L.duracion, {
+            cargaId: L.cargaId,
+            asignaturaId: L.asignaturaId,
+            docenteId: L.docenteId ?? null,
+            claseId: L.claseId,
+            duracion: L.duracion,
+          });
+          return true;
+        }
+        // intentar mover el bloque del docente en su propia clase
+        const moved = moveBlockWithinClass(blockerInfo.claseId, blockerInfo.blk);
+        if (!moved) continue;
+        if (teacherFreeRange(L.docenteId, target, L.duracion) && canPlace(L.claseId, target, L.duracion)) {
+          placeCell(L.claseId, target, L.duracion, {
+            cargaId: L.cargaId,
+            asignaturaId: L.asignaturaId,
+            docenteId: L.docenteId ?? null,
+            claseId: L.claseId,
+            duracion: L.duracion,
+          });
+          return true;
+        }
+        // revert move if failed
+        const blk = findBlockInClassByCarga(blockerInfo.claseId, blockerInfo.blk.cell.cargaId);
+        if (blk) moveBlockWithinClass(blockerInfo.claseId, blk);
+      }
+    }
+    return false;
+  }
+
+  const stillUnplacedAfterIntra = lessons.filter(L => !assignedSetFinal.has(L.id));
+  for (const L of stillUnplacedAfterIntra) {
+    const placed = tryCrossRelocateTeacherBlock(L);
+    if (placed) assignedSetFinal.add(L.id);
+  }
+
+  // -------------------------
+  // Intercambio docente 1:1 entre clases (mover bloque del mismo docente en otra clase a otro slot libre)
+  // -------------------------
+  function tryTeacherSwap(L: LessonItem): boolean {
+    if (!L.docenteId) return false;
+    const domain = lessonDomains.get(L.id) ?? [];
+
+    for (const start of domain) {
+      if (!canPlace(L.claseId, start, L.duracion)) continue;
+      // identificar bloqueador docente en ese rango (otra clase)
+      const blockers: { claseId: string; blk: { start: number; dur: number; cell: TimetableCell } }[] = [];
+      for (let k = 0; k < L.duracion; k++) {
+        const idx = start + k;
+        for (const [cid, arr] of Object.entries(timetableByClase)) {
+          if (cid === L.claseId) continue;
+          const cell = arr[idx];
+          if (cell && cell.docenteId === L.docenteId) {
+            const blk = findBlockStartAndDur(arr, idx);
+            if (blk) blockers.push({ claseId: cid, blk });
+            break;
+          }
+        }
+      }
+      if (blockers.length !== 1) continue; // solo manejamos un bloqueador simple
+      const blocker = blockers[0];
+
+      // intentar mover bloqueador a otro slot en su misma clase
+      const movedOk = moveBlockWithinClass(blocker.claseId, blocker.blk);
+      if (!movedOk) continue;
+
+      // si ahora el docente está libre en el target, colocar la lección
+      if (teacherFreeRange(L.docenteId, start, L.duracion) && canPlace(L.claseId, start, L.duracion)) {
+        placeCell(L.claseId, start, L.duracion, {
+          cargaId: L.cargaId,
+          asignaturaId: L.asignaturaId,
+          docenteId: L.docenteId ?? null,
+          claseId: L.claseId,
+          duracion: L.duracion,
+        });
+        return true;
+      }
+
+      // revert si no se pudo colocar
+      const blkBack = findBlockStartAndDur(timetableByClase[blocker.claseId], blocker.blk.start);
+      if (blkBack) moveBlockWithinClass(blocker.claseId, blkBack);
+    }
+
+    return false;
+  }
+
+  const stillUnplacedAfterSwap = lessons.filter(L => !assignedSetFinal.has(L.id));
+  for (const L of stillUnplacedAfterSwap) {
+    const placed = tryTeacherSwap(L);
+    if (placed) assignedSetFinal.add(L.id);
+  }
+
+  // -------------------------
+  // Último recurso opcional: colocar ignorando conflicto de docente pero registrando violaciones
+  // -------------------------
+  const forcedTeacherConflicts: Array<{ lessonId: string; docenteId: string | null | undefined; placedAt: number; conflictedWith: Array<{ claseId: string; cargaId: string; idx: number }> }> = [];
+  const forceTeacherPlace = Boolean(options?.relaxTeacherConstraints);
+
+  if (forceTeacherPlace) {
+    const stillUnplaced = lessons.filter(L => !assignedSetFinal.has(L.id));
+    for (const L of stillUnplaced) {
+      const domain = lessonDomains.get(L.id) ?? [];
+      for (const start of domain) {
+        if (!canPlace(L.claseId, start, L.duracion)) continue;
+        // gather conflicts
+        const conflicts: Array<{ claseId: string; cargaId: string; idx: number }> = [];
+        for (let k = 0; k < L.duracion; k++) {
+          const idx = start + k;
+          for (const [cid, arr] of Object.entries(timetableByClase)) {
+            const cell = arr[idx];
+            if (cell && cell.docenteId && cell.docenteId === L.docenteId) {
+              conflicts.push({ claseId: cid, cargaId: cell.cargaId, idx });
+            }
+          }
+        }
+        placeCell(L.claseId, start, L.duracion, {
+          cargaId: L.cargaId,
+          asignaturaId: L.asignaturaId,
+          docenteId: L.docenteId ?? null,
+          claseId: L.claseId,
+          duracion: L.duracion,
+        });
+        assignedSetFinal.add(L.id);
+        forcedTeacherConflicts.push({ lessonId: L.id, docenteId: L.docenteId, placedAt: start, conflictedWith: conflicts });
+        break;
+      }
+    }
+  }
+
+  // recompute after relocation attempts
+  unplacedList = lessons.filter(L => !assignedSetFinal.has(L.id)).map(L => L.id);
+  assignedLessonsCount = assignedSetFinal.size;
+
   // Paso final: forzar colocación ignorando docente si hay hueco en la clase
   let forcedPlaced = 0;
   if (forcePlaceRemaining && unplacedList.length > 0) {
@@ -1136,9 +1407,35 @@ export function generateTimetable(
   const lessonDebugObj: Record<string, any> = {};
   for (const [k, v] of lessonDebug.entries()) lessonDebugObj[k] = v;
 
+  // Validación final de conflictos de docente (no debe haber más de un bloque por docente en el mismo slot)
+  const teacherConflicts: Array<{ docenteId: string; idx: number; cargas: string[]; clases: string[] }> = [];
+  const teacherSlotMap: Record<string, Record<number, { cargaId: string; claseId: string }[]>> = {};
+  for (const [cid, arr] of Object.entries(timetableByClase)) {
+    for (let idx = 0; idx < arr.length; idx++) {
+      const cell = arr[idx];
+      if (!cell || !cell.docenteId) continue;
+      const t = cell.docenteId;
+      teacherSlotMap[t] = teacherSlotMap[t] || {};
+      teacherSlotMap[t][idx] = teacherSlotMap[t][idx] || [];
+      teacherSlotMap[t][idx].push({ cargaId: cell.cargaId, claseId: cid });
+    }
+  }
+  for (const [doc, slots] of Object.entries(teacherSlotMap)) {
+    for (const [idxStr, items] of Object.entries(slots)) {
+      if (items.length > 1) {
+        teacherConflicts.push({
+          docenteId: doc,
+          idx: Number(idxStr),
+          cargas: items.map(x => x.cargaId),
+          clases: items.map(x => x.claseId),
+        });
+      }
+    }
+  }
+
   return {
     timetableByClase,
-    success: unplacedList.length === 0,
+    success: unplacedList.length === 0 && teacherConflicts.length === 0,
     unplaced: unplacedList,
     stats: {
       lessonsTotal: lessons.length,
@@ -1164,6 +1461,8 @@ export function generateTimetable(
       assignedLessons: Array.from(assignedSetFinal),
       assignedSlots: assignedSlotsTotal,
       forcedPlaced,
+      forcedTeacherConflicts,
+      teacherConflicts,
     },
   };
 }

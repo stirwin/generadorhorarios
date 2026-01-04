@@ -170,6 +170,7 @@ export async function POST(req: Request) {
     console.log("generateTimetable: debug summary:", {
       unplacedCount: (result.unplaced ?? []).length,
       placedByGlobalGreedy: result.meta?.placedByGlobalGreedy ?? 0,
+      forcedTeacherConflicts: result.meta?.forcedTeacherConflicts?.length ?? 0,
     });
 
     return NextResponse.json({

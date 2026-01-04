@@ -378,34 +378,69 @@ export default function InstitucionWizard() {
       {/* Main */}
       <main className="flex-1 overflow-auto">
         <div className="p-6">
-          <h1 className="text-2xl font-bold mb-4">Dashboard de Institución</h1>
+          <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h1 className="text-2xl font-bold">Institución</h1>
+              <p className="text-sm text-muted-foreground">Resumen y acciones rápidas para la institución activa.</p>
+            </div>
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={() => setWizardOpen(true)}>Editar institución</Button>
+              <Button
+                disabled={!institucionSeleccionada || loadingTimetable}
+                onClick={handleGenerateTimetable}
+              >
+                {loadingTimetable ? "Generando..." : "Generar horario"}
+              </Button>
+            </div>
+          </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-            <Card>
-              <CardHeader>
-                <CardTitle>Institución seleccionada</CardTitle>
-                <CardDescription>{institucionSeleccionada?.nombre ?? "Ninguna"}</CardDescription>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+            <Card className="lg:col-span-2">
+              <CardHeader className="pb-3">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <CardTitle>{institucionSeleccionada?.nombre ?? "Selecciona una institución"}</CardTitle>
+                    <CardDescription>{institucionSeleccionada?.nivel ?? "—"}</CardDescription>
+                  </div>
+                  {institucionSeleccionada && badgeForEstado(institucionSeleccionada.estadoHorario)}
+                </div>
               </CardHeader>
-              <CardContent>
-                <p className="text-sm text-muted-foreground">Nivel: {institucionSeleccionada?.nivel ?? "-"}</p>
-                <p className="text-sm text-muted-foreground">
-                  Días: {institucionSeleccionada?.dias_por_semana ?? "-"} • Lecciones: {institucionSeleccionada?.lecciones_por_dia ?? "-"}
-                </p>
+              <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                <div className="rounded-md border p-3">
+                  <p className="text-xs text-muted-foreground">Días por semana</p>
+                  <p className="text-lg font-semibold">{institucionSeleccionada?.dias_por_semana ?? "—"}</p>
+                </div>
+                <div className="rounded-md border p-3">
+                  <p className="text-xs text-muted-foreground">Lecciones por día</p>
+                  <p className="text-lg font-semibold">{institucionSeleccionada?.lecciones_por_dia ?? "—"}</p>
+                </div>
+                <div className="rounded-md border p-3">
+                  <p className="text-xs text-muted-foreground">Clases registradas</p>
+                  <p className="text-lg font-semibold">{institucionSeleccionada?.clases?.length ?? 0}</p>
+                </div>
+                <div className="rounded-md border p-3">
+                  <p className="text-xs text-muted-foreground">Horario</p>
+                  <p className="text-lg font-semibold">{timetableStats ? `${timetableStats.assigned}/${timetableStats.lessonsTotal}` : "—"}</p>
+                  {timetableStats && (
+                    <p className="text-xs text-muted-foreground">
+                      {typeof timetableStats.unplacedCount === "number" ? `Sin asignar: ${timetableStats.unplacedCount}` : ""}
+                    </p>
+                  )}
+                </div>
               </CardContent>
-              <CardFooter>
-                <Button onClick={() => setWizardOpen(true)}>Configurar / Reconfigurar</Button>
-              </CardFooter>
             </Card>
 
-            <Card>
+            <Card className="border-primary/30 bg-primary/5">
               <CardHeader>
                 <CardTitle>Importar datos</CardTitle>
-                <CardDescription>Docentes, clases, asignaturas y carga académica</CardDescription>
+                <CardDescription>
+                  Actualiza docentes, clases, asignaturas y cargas para la institución seleccionada.
+                </CardDescription>
               </CardHeader>
               <CardContent>
-                <p className="text-sm text-muted-foreground">Sube el Excel siguiendo la plantilla</p>
+                <p className="text-sm text-muted-foreground">Sube el Excel usando la plantilla. Los datos se aplicarán a esta institución.</p>
               </CardContent>
-              <CardFooter>
+              <CardFooter className="flex flex-col gap-2">
                 {institucionSeleccionada ? (
                   <ImportadorExcel
                     institucionId={institucionSeleccionada.id}
@@ -415,34 +450,11 @@ export default function InstitucionWizard() {
                 ) : (
                   <div className="text-sm text-muted-foreground">Selecciona una institución para importar</div>
                 )}
-              </CardFooter>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle>Estado del horario</CardTitle>
-                <CardDescription>Progreso y acciones</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <p className="text-sm text-muted-foreground">{institucionSeleccionada?.estadoHorario ?? "-"}</p>
-              </CardContent>
-              <CardFooter>
-                <div className="flex items-center gap-4 w-full">
-                  <Button
-                    disabled={!institucionSeleccionada || loadingTimetable}
-                    onClick={handleGenerateTimetable}
-                  >
-                    {loadingTimetable ? "Generando..." : "Generar horario"}
-                  </Button>
-
-                  {timetableStats && (
-                    <div className="text-sm text-muted-foreground">
-                      {timetableStats.assigned}/{timetableStats.lessonsTotal} asignadas
-                      {typeof timetableStats.unplacedCount === "number" ? ` • sin asignar: ${timetableStats.unplacedCount}` : ""}
-                      {" • backtracks: "}{timetableStats.backtracks}
-                    </div>
-                  )}
-                </div>
+                {importPreviewLoaded && (
+                  <Badge variant={importPersisted ? "default" : "secondary"}>
+                    {importPersisted ? "Datos guardados" : "Previsualización cargada"}
+                  </Badge>
+                )}
               </CardFooter>
             </Card>
           </div>
