@@ -153,11 +153,25 @@ export async function POST(req: Request) {
       }
     }
 
+    const unplacedInfo = unplaced.map((lid) => {
+      const cargaId = String(lid).split("__")[0];
+      const cm = cargaMap.get(cargaId);
+      return {
+        lessonId: lid,
+        cargaId,
+        asignatura: cm?.asignaturaNombre ?? cm?.asignaturaId ?? "Asignatura",
+        docente: cm?.docenteNombre ?? cm?.docenteId ?? "Sin docente",
+        clase: (cm?.claseId && claseNameMap.get(cm.claseId)?.nombre) ?? cm?.claseId ?? "Clase",
+        duracion: cm?.duracion ?? 1,
+      };
+    });
+
     const debugPayload = {
       keys: Object.keys(normalized),
       assignedSummary,
       unplaced,
       unplacedDetails,
+      unplacedInfo,
       lessonsTotal: lessons.length,
       assignedLessonsCount: assignedLessonIds.size,
       cargasTotal: cargas.length,

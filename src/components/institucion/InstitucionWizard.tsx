@@ -62,19 +62,19 @@ export default function InstitucionWizard() {
   // -------------------------
   // Efectos (carga inicial)
   // -------------------------
-  useEffect(() => {
-    async function fetchInstituciones() {
-      try {
-        const res = await fetch("/api/instituciones");
-        if (!res.ok) throw new Error(`Error al obtener instituciones: ${res.status}`);
-        const data = await res.json();
-        const mapped: InstitucionType[] = (data || []).map((ins: any) => ({
+  async function fetchInstituciones() {
+    try {
+      const res = await fetch("/api/instituciones");
+      if (!res.ok) throw new Error(`Error al obtener instituciones: ${res.status}`);
+      const data = await res.json();
+      const mapped: InstitucionType[] = (data || []).map((ins: any) => ({
           id: ins.id,
           nombre: ins.nombre,
           nivel: ins.nivel ?? "Desconocido",
           estadoHorario: ins.estadoHorario ?? "sin-iniciar",
           dias_por_semana: ins.dias_por_semana ?? 5,
           lecciones_por_dia: ins.lecciones_por_dia ?? 7,
+          periodos: Array.isArray(ins.periodos) ? ins.periodos : [],
           clases: Array.isArray(ins.clases)
             ? ins.clases.map((c: any) => ({
                 id: c.id,
@@ -83,14 +83,27 @@ export default function InstitucionWizard() {
                 institucionId: c.institucionId ?? ins.id,
               }))
             : [],
-        }));
-        setInstituciones(mapped);
-        setInstitucionSeleccionada(mapped[0] ?? null);
-      } catch (err) {
-        console.error("fetchInstituciones error:", err);
-      }
+          docentes: Array.isArray(ins.docentes)
+            ? ins.docentes.map((d: any) => ({ id: d.id, nombre: d.nombre ?? String(d.id), abreviatura: d.abreviatura ?? "" }))
+            : [],
+          asignaturas: Array.isArray(ins.asignaturas)
+            ? ins.asignaturas.map((a: any) => ({ id: a.id, nombre: a.nombre ?? String(a.id), abreviatura: a.abreviatura ?? "" }))
+            : [],
+          cargas: Array.isArray(ins.cargas)
+            ? ins.cargas.map((c: any) => ({ id: c.id, asignaturaId: c.asignaturaId, claseId: c.claseId, docenteId: c.docenteId ?? null }))
+            : [],
+      }));
+      setInstituciones(mapped);
+      setInstitucionSeleccionada((prev) => {
+        if (!prev) return mapped[0] ?? null;
+        return mapped.find((i) => i.id === prev.id) ?? mapped[0] ?? null;
+      });
+    } catch (err) {
+      console.error("fetchInstituciones error:", err);
     }
+  }
 
+  useEffect(() => {
     fetchInstituciones();
   }, []);
 
@@ -163,7 +176,11 @@ export default function InstitucionWizard() {
         diasPorSemana: diasPorSemana,
         lecciones_por_dia: leccionesPorDia,
         leccionesPorDia: leccionesPorDia,
-        clases: []
+        periodos: Array.isArray(data?.institucion?.periodos) ? data.institucion.periodos : periodos,
+        clases: [],
+        docentes: [],
+        asignaturas: [],
+        cargas: [],
       };
 
       setInstituciones((prev) => [nueva, ...prev]);
@@ -252,7 +269,9 @@ export default function InstitucionWizard() {
       setTimetableStats(data?.stats ? { ...data.stats, unplacedCount: unplacedFromServer.length } : null);
 
       // ---------- NUEVO: extraer metadatos / debug ----------
-      const metaCandidate = data?.meta ?? data?.debug?.timetablerMeta ?? data?.debug ?? null;
+      const metaCandidate = data?.debug
+        ? { ...data.debug, timetablerMeta: data.debug.timetablerMeta ?? data?.meta ?? null }
+        : (data?.meta ?? data?.debug?.timetablerMeta ?? null);
       setTimetableMeta(metaCandidate);
       console.log("timetable meta (candidate):", metaCandidate);
 
@@ -378,25 +397,20 @@ export default function InstitucionWizard() {
       {/* Main */}
       <main className="flex-1 overflow-auto">
         <div className="p-6">
-          <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div>
               <h1 className="text-2xl font-bold">Institución</h1>
               <p className="text-sm text-muted-foreground">Resumen y acciones rápidas para la institución activa.</p>
             </div>
             <div className="flex gap-2">
               <Button variant="outline" onClick={() => setWizardOpen(true)}>Editar institución</Button>
-              <Button
-                disabled={!institucionSeleccionada || loadingTimetable}
-                onClick={handleGenerateTimetable}
-              >
-                {loadingTimetable ? "Generando..." : "Generar horario"}
-              </Button>
+             
             </div>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
-            <Card className="lg:col-span-2">
-              <CardHeader className="pb-3">
+          <div className="flex flex-col lg:flex-row gap-3 mb-6">
+            <Card className="flex-1 lg:max-w-4xl">
+              <CardHeader className="pb-2">
                 <div className="flex items-start justify-between">
                   <div>
                     <CardTitle>{institucionSeleccionada?.nombre ?? "Selecciona una institución"}</CardTitle>
@@ -405,28 +419,39 @@ export default function InstitucionWizard() {
                   {institucionSeleccionada && badgeForEstado(institucionSeleccionada.estadoHorario)}
                 </div>
               </CardHeader>
-              <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-                <div className="rounded-md border p-3">
-                  <p className="text-xs text-muted-foreground">Días por semana</p>
-                  <p className="text-lg font-semibold">{institucionSeleccionada?.dias_por_semana ?? "—"}</p>
+              <CardContent className="flex flex-wrap gap-2 text-sm">
+                <div className="rounded-md border px-3 py-2 min-w-[96px]">
+                  <p className="text-[11px] text-muted-foreground uppercase">Días/sem</p>
+                  <p className="text-base font-semibold">{institucionSeleccionada?.dias_por_semana ?? "—"}</p>
                 </div>
-                <div className="rounded-md border p-3">
-                  <p className="text-xs text-muted-foreground">Lecciones por día</p>
-                  <p className="text-lg font-semibold">{institucionSeleccionada?.lecciones_por_dia ?? "—"}</p>
+                <div className="rounded-md border px-3 py-2 min-w-[96px]">
+                  <p className="text-[11px] text-muted-foreground uppercase">Lecciones/día</p>
+                  <p className="text-base font-semibold">{institucionSeleccionada?.lecciones_por_dia ?? "—"}</p>
                 </div>
-                <div className="rounded-md border p-3">
-                  <p className="text-xs text-muted-foreground">Clases registradas</p>
-                  <p className="text-lg font-semibold">{institucionSeleccionada?.clases?.length ?? 0}</p>
+                <div className="rounded-md border px-3 py-2 min-w-[96px]">
+                  <p className="text-[11px] text-muted-foreground uppercase">Clases</p>
+                  <p className="text-base font-semibold">{institucionSeleccionada?.clases?.length ?? 0}</p>
                 </div>
-                <div className="rounded-md border p-3">
-                  <p className="text-xs text-muted-foreground">Horario</p>
-                  <p className="text-lg font-semibold">{timetableStats ? `${timetableStats.assigned}/${timetableStats.lessonsTotal}` : "—"}</p>
+                <div className="rounded-md border px-3 py-2 min-w-[120px]">
+                  <p className="text-[11px] text-muted-foreground uppercase">Horario</p>
+                  <p className="text-base font-semibold">
+                    {timetableStats ? `${timetableStats.assigned}/${timetableStats.lessonsTotal}` : "—"}
+                  </p>
                   {timetableStats && (
-                    <p className="text-xs text-muted-foreground">
+                    <p className="text-[11px] text-muted-foreground">
                       {typeof timetableStats.unplacedCount === "number" ? `Sin asignar: ${timetableStats.unplacedCount}` : ""}
+                      {` • slots: ${timetableStats.assignedSlots ?? "—"}`}
                     </p>
                   )}
                 </div>
+                <Button
+                  size="sm"
+                  className="ml-auto"
+                  disabled={!institucionSeleccionada || loadingTimetable}
+                  onClick={handleGenerateTimetable}
+                >
+                  {loadingTimetable ? "Generando..." : "Generar horario"}
+                </Button>
               </CardContent>
             </Card>
 
@@ -445,7 +470,11 @@ export default function InstitucionWizard() {
                   <ImportadorExcel
                     institucionId={institucionSeleccionada.id}
                     onPreviewLoaded={() => { setImportPreviewLoaded(true); setImportPersisted(false); }}
-                    onPersisted={() => { setImportPreviewLoaded(true); setImportPersisted(true); }}
+                    onPersisted={async () => {
+                      setImportPreviewLoaded(true);
+                      setImportPersisted(true);
+                      await fetchInstituciones();
+                    }}
                   />
                 ) : (
                   <div className="text-sm text-muted-foreground">Selecciona una institución para importar</div>

@@ -12,6 +12,25 @@ export interface Clase {
   updatedAt?: string;
 }
 
+export interface Docente {
+  id: string;
+  nombre: string;
+  abreviatura?: string;
+}
+
+export interface Asignatura {
+  id: string;
+  nombre: string;
+  abreviatura?: string;
+}
+
+export interface CargaAcademica {
+  id: string;
+  asignaturaId: string;
+  claseId: string;
+  docenteId?: string | null;
+}
+
 type Periodo = {
   indice: number;
   abreviatura?: string;
@@ -27,6 +46,9 @@ type Periodo = {
   cicloEscolar: string;
       periodos?: Periodo[]; // si existe, se usa para las etiquetas de hora
   clases?: Clase[]; // <--- necesario
+  docentes?: Docente[];
+  asignaturas?: Asignatura[];
+  cargas?: CargaAcademica[];
   diasPorSemana: number;
   dias_por_semana?: number;
   leccionesPorDia: number;

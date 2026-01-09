@@ -1136,6 +1136,37 @@ export function generateTimetable(
     }
     // restore if fail
     for (let k = 0; k < dur; k++) arr[start + k] = cell;
+    // attempt swap with same-duration block in the same class
+    for (let d = 0; d < days; d++) {
+      for (let p = 0; p <= slotsPerDay - dur; p++) {
+        const candidate = slotIndex(d, p, slotsPerDay);
+        if (candidate === start) continue;
+        const otherCell = arr[candidate];
+        if (!otherCell || otherCell.cargaId === cell.cargaId) continue;
+        const otherBlk = findBlockStartAndDur(arr, candidate);
+        if (!otherBlk) continue;
+        if (otherBlk.dur !== dur) continue;
+
+        const blockedForCell = new Set<number>();
+        const blockedForOther = new Set<number>();
+        for (let k = 0; k < dur; k++) {
+          blockedForCell.add(otherBlk.start + k);
+          blockedForOther.add(start + k);
+        }
+
+        if (!canPlaceWithBlocked(claseId, otherBlk.start, dur, blockedForCell)) continue;
+        if (!teacherFreeRangeWithBlocked(cell.docenteId ?? null, otherBlk.start, dur, blockedForCell)) continue;
+        if (!canPlaceWithBlocked(claseId, start, dur, blockedForOther)) continue;
+        if (!teacherFreeRangeWithBlocked(otherBlk.cell.docenteId ?? null, start, dur, blockedForOther)) continue;
+
+        removeCell(claseId, start, dur);
+        removeCell(claseId, otherBlk.start, dur);
+        placeCell(claseId, otherBlk.start, dur, { ...cell });
+        placeCell(claseId, start, dur, { ...otherBlk.cell });
+        return true;
+      }
+    }
+
     return false;
   }
 
@@ -1311,6 +1342,106 @@ export function generateTimetable(
   const stillUnplacedAfterSwap = lessons.filter(L => !assignedSetFinal.has(L.id));
   for (const L of stillUnplacedAfterSwap) {
     const placed = tryTeacherSwap(L);
+    if (placed) assignedSetFinal.add(L.id);
+  }
+
+  // -------------------------
+  // Reparación por expulsión (ejection chain) para conflictos de docente
+  // -------------------------
+  function findBlockingTeacherBlock(docenteId: string, start: number, dur: number) {
+    for (let k = 0; k < dur; k++) {
+      const idx = start + k;
+      for (const [cid, arr] of Object.entries(timetableByClase)) {
+        const cell = arr[idx];
+        if (cell && cell.docenteId === docenteId) {
+          const blk = findBlockStartAndDur(arr, idx);
+          if (blk) return { claseId: cid, blk };
+        }
+      }
+    }
+    return null;
+  }
+
+  function relocateBlockWithChain(
+    claseId: string,
+    blk: { start: number; dur: number; cell: TimetableCell },
+    depth: number,
+    visited: Set<string>
+  ): boolean {
+    if (depth <= 0) return false;
+    if (visited.has(blk.cell.cargaId)) return false;
+    visited.add(blk.cell.cargaId);
+
+    for (let d = 0; d < days; d++) {
+      for (let p = 0; p <= slotsPerDay - blk.dur; p++) {
+        const candidate = slotIndex(d, p, slotsPerDay);
+        if (candidate === blk.start) continue;
+        if (!canPlace(claseId, candidate, blk.dur)) continue;
+        if (teacherFreeRange(blk.cell.docenteId ?? null, candidate, blk.dur)) {
+          removeCell(claseId, blk.start, blk.dur);
+          placeCell(claseId, candidate, blk.dur, { ...blk.cell });
+          return true;
+        }
+
+        const blocker = blk.cell.docenteId
+          ? findBlockingTeacherBlock(blk.cell.docenteId, candidate, blk.dur)
+          : null;
+        if (!blocker) continue;
+        if (!blocker.blk.cell?.cargaId || visited.has(blocker.blk.cell.cargaId)) continue;
+        if (relocateBlockWithChain(blocker.claseId, blocker.blk, depth - 1, visited)) {
+          if (teacherFreeRange(blk.cell.docenteId ?? null, candidate, blk.dur) && canPlace(claseId, candidate, blk.dur)) {
+            removeCell(claseId, blk.start, blk.dur);
+            placeCell(claseId, candidate, blk.dur, { ...blk.cell });
+            return true;
+          }
+        }
+      }
+    }
+
+    visited.delete(blk.cell.cargaId);
+    return false;
+  }
+
+  function tryEjectionChainForLesson(L: LessonItem, depth: number): boolean {
+    if (!L.docenteId) return false;
+    const domain = lessonDomains.get(L.id) ?? [];
+
+    for (const start of domain) {
+      if (!canPlace(L.claseId, start, L.duracion)) continue;
+      if (teacherFreeRange(L.docenteId, start, L.duracion)) {
+        placeCell(L.claseId, start, L.duracion, {
+          cargaId: L.cargaId,
+          asignaturaId: L.asignaturaId,
+          docenteId: L.docenteId ?? null,
+          claseId: L.claseId,
+          duracion: L.duracion,
+        });
+        return true;
+      }
+
+      const blocker = findBlockingTeacherBlock(L.docenteId, start, L.duracion);
+      if (!blocker) continue;
+      const visited = new Set<string>();
+      if (relocateBlockWithChain(blocker.claseId, blocker.blk, depth, visited)) {
+        if (teacherFreeRange(L.docenteId, start, L.duracion) && canPlace(L.claseId, start, L.duracion)) {
+          placeCell(L.claseId, start, L.duracion, {
+            cargaId: L.cargaId,
+            asignaturaId: L.asignaturaId,
+            docenteId: L.docenteId ?? null,
+            claseId: L.claseId,
+            duracion: L.duracion,
+          });
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  const stillUnplacedAfterEjection = lessons.filter(L => !assignedSetFinal.has(L.id));
+  for (const L of stillUnplacedAfterEjection) {
+    const placed = tryEjectionChainForLesson(L, 2);
     if (placed) assignedSetFinal.add(L.id);
   }
 

@@ -43,21 +43,8 @@ export default function VistaSemanalHorario({
   onExport,
   onSave,
 }: Props) {
-  // Seguridad: si no hay institucion, mostramos mensaje
-  if (!institucion) {
-    return (
-      <div className="p-6">
-        <Card>  
-          <CardHeader>
-            <CardTitle>Editor de Horarios</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-sm text-muted-foreground">Selecciona una institución para ver o generar el horario.</div>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
+  // Seguridad: si no hay institución, no renderizamos nada (ya lo maneja el nivel superior)
+  if (!institucion) return null;
 
   const dias = institucion.dias_por_semana ?? 5;
   const lecciones = institucion.lecciones_por_dia ?? 7;
@@ -76,14 +63,36 @@ export default function VistaSemanalHorario({
     return filled;
   }, [selectedClassId, timetableByClase, dias, lecciones]);
 
+  // Asignaturas presentes en la clase seleccionada (derivadas del horario renderizado, no de BD)
+  const asignaturasEnClase = useMemo(() => {
+    if (!selectedClassId) return [];
+    const arr = timetableByClase?.[selectedClassId] ?? [];
+    const map = new Map<string, string>();
+    for (const cell of arr) {
+      if (!cell) continue;
+      const key = cell.asignaturaId || cell.asignaturaNombre || cell.cargaId;
+      if (!key) continue;
+      const label = cell.asignaturaNombre || cell.asignaturaId || key;
+      if (!map.has(key)) map.set(key, label);
+    }
+    return Array.from(map.values());
+  }, [selectedClassId, timetableByClase]);
+
   // etiquetas de hora: usa periodos si están, si no genera "Slot 1", "Slot 2" o calcula horarios simples
   const horaLabels = useMemo(() => {
     const p = institucion.periodos ?? [];
     if (p.length >= lecciones) {
-      return p.slice(0, lecciones).map((x) => x.hora_inicio ?? x.abreviatura ?? `Slot ${x.indice}`);
+      return p.slice(0, lecciones).map((x, idx) => {
+        const inicio = x.hora_inicio ?? (x as any).horaInicio;
+        const fin = x.hora_fin ?? (x as any).horaFin;
+        if (inicio && fin) return `${inicio} - ${fin}`;
+        if (inicio) return inicio;
+        if (x.abreviatura) return x.abreviatura;
+        return `Slot ${x.indice ?? idx + 1}`;
+      });
     }
-    // fallback: generar labels numéricas a partir de un inicio 08:00 + 45min por slot (aprox.)
-    const baseHour = 8;
+    // fallback: generar labels numéricas a partir de un inicio 06:00 + 60min por slot
+    const baseHour = 6;
     return Array.from({ length: lecciones }, (_, i) => {
       const hour = baseHour + i;
       const h = String(hour).padStart(2, "0");
@@ -287,13 +296,19 @@ export default function VistaSemanalHorario({
               <CardTitle className="text-base">Asignaturas Disponibles</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="flex flex-wrap gap-2">
-                {/* Este bloque es demostrativo; integra tu lista real de asignaturas */}
-                <Badge className="bg-blue-500 cursor-pointer">Matemáticas</Badge>
-                <Badge className="bg-green-500 cursor-pointer">Lengua</Badge>
-                <Badge className="bg-purple-500 cursor-pointer">Ciencias</Badge>
-                <Badge className="bg-amber-500 cursor-pointer">Historia</Badge>
-              </div>
+              {asignaturasEnClase.length > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  {asignaturasEnClase.map((asig) => (
+                    <Badge key={asig} variant="secondary" className="text-xs">
+                      {asig}
+                    </Badge>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  No se encontraron asignaturas en el horario de esta clase.
+                </p>
+              )}
             </CardContent>
           </Card>
         </div>

@@ -1,10 +1,9 @@
 // app/page.tsx
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import type { Institucion } from "@/types/institucion";
 import { BarraLateral } from "@/components/barra-lateral";
-import { PanelControl } from "@/components/panel-control";
 import { Docentes } from "@/components/docentes";
 import { Cursos } from "@/components/cursos";
 import { Asignaturas } from "@/components/asignaturas";
@@ -19,35 +18,60 @@ export default function HomePage() {
 
   // Estado global principal: institución seleccionada (levántalo aquí si quieres que otras vistas lo usen)
   const [institucion, setInstitucion] = useState<Institucion | null>(null);
+  const [instituciones, setInstituciones] = useState<Institucion[]>([]);
 
   // Control del wizard: abrimos el modal único
   const [wizardOpen, setWizardOpen] = useState(false);
+
+  const cargarInstituciones = useCallback(async () => {
+    try {
+      const res = await fetch("/api/instituciones");
+      if (!res.ok) return;
+      const data = await res.json();
+      setInstituciones(Array.isArray(data) ? data : []);
+      // si la seleccionada ya no existe, limpiarla
+      if (institucion && !data.find((i: any) => i.id === institucion.id)) {
+        setInstitucion(null);
+      }
+    } catch {
+      // silencio
+    }
+  }, [institucion]);
+
+  useEffect(() => {
+    cargarInstituciones();
+  }, [cargarInstituciones]);
+
+  const handleSeleccionarInstitucion = (inst: Institucion | null) => {
+    if (inst) {
+      const full = instituciones.find((i) => i.id === inst.id) ?? inst;
+      setInstitucion(full);
+      setVistaActual("horario");
+    } else {
+      setInstitucion(null);
+    }
+  };
+
+  const handleCambiarVista = (vista: VistaNavegacion) => {
+    // Si intentan ir a horario sin institución, abre wizard en vez de mostrar panel vacío
+    if (vista === "horario" && !institucion) {
+      setWizardOpen(true);
+      return;
+    }
+    setVistaActual(vista);
+  };
 
   return (
     <div className="flex h-screen bg-background">
       <BarraLateral
         vistaActual={vistaActual}
-        onCambiarVista={setVistaActual}
+        onCambiarVista={handleCambiarVista}
         institucionSeleccionada={institucion}
-        onSeleccionarInstitucion={setInstitucion}
-        instituciones={institucion ? [institucion] : []}
+        onSeleccionarInstitucion={handleSeleccionarInstitucion}
+        instituciones={instituciones}
       />
 
-      <main className="flex-1 overflow-auto">
-        {vistaActual === "panel" && (
-          <PanelControl
-            institucion={institucion}
-            onSeleccionarInstitucion={setInstitucion}
-            onAbrirWizard={() => setWizardOpen(true)}
-          />
-        )}
-
-        {vistaActual === "docentes" && institucion && <Docentes institucion={institucion} />}
-        {vistaActual === "cursos" && institucion && <Cursos institucion={institucion} />}
-        {vistaActual === "asignaturas" && institucion && <Asignaturas institucion={institucion} />}
-        {vistaActual === "horario" && institucion && <EditorHorario institucion={institucion} />}
-        {vistaActual === "configuracion" && <Configuracion />}
-      </main>
+     
 
       {/* ÚNICA fuente del modal: InstitucionWizard */}
       <InstitucionWizard
@@ -55,7 +79,8 @@ export default function HomePage() {
         onOpenChange={setWizardOpen}
         onInstitucionCreada={(inst: Institucion) => {
           // Recibe el objeto institución creado desde el wizard y lo guarda en el state global
-          setInstitucion(inst);
+          handleSeleccionarInstitucion(inst);
+          cargarInstituciones();
           setWizardOpen(false);
         }}
       />

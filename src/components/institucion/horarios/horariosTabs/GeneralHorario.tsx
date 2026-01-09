@@ -1,8 +1,8 @@
 // components/horarios/views/VistaGeneralHorario.tsx
 "use client";
 
-import React, { useMemo } from "react";
-import { Button } from "@/components/ui/button";
+import React, { useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import type { TimetableCell } from "@/lib/timetabler";
 
@@ -20,15 +20,27 @@ export default function VistaGeneralHorario({
   onGenerate,
   // Nuevo prop opcional: contiene result.meta (timetablerMeta) del servidor
   timetablerMeta,
+  onExportAll,
 }: {
-  institucion: { id: string; nombre?: string; dias_por_semana?: number; lecciones_por_dia?: number; periodos?: Periodo[] };
+  institucion: {
+    id: string;
+    nombre?: string;
+    dias_por_semana?: number;
+    lecciones_por_dia?: number;
+    periodos?: Periodo[];
+    clases?: Clase[];
+    docentes?: { id: string; nombre: string }[];
+    asignaturas?: { id: string; nombre: string; abreviatura?: string }[];
+    cargas?: { id: string; asignaturaId: string; claseId: string; docenteId?: string | null }[];
+  };
   timetableByClase: Record<string, Array<TimetableCell | null>> | undefined;
   classes: Clase[];
   onGenerate?: () => Promise<void> | void;
   timetablerMeta?: any;
+  onExportAll?: () => void;
 }) {
-  const dias = institucion.dias_por_semana ?? 5;
-  const lecciones = institucion.lecciones_por_dia ?? 7;
+  const dias = institucion.dias_por_semana ?? (institucion as any).diasPorSemana ?? 5;
+  const lecciones = institucion.lecciones_por_dia ?? (institucion as any).leccionesPorDia ?? 7;
   const totalSlots = dias * lecciones;
   const diasNombres = ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"].slice(0, dias);
 
@@ -109,20 +121,26 @@ export default function VistaGeneralHorario({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timetableByClase, classes, dias, lecciones]);
 
+  const [localTimetable, setLocalTimetable] = useState<Record<string, Array<TimetableCell | null>>>({});
+
+  useEffect(() => {
+    setLocalTimetable(normalizedTimetable);
+  }, [normalizedTimetable]);
+
   // Debug: resumen de asignaciones
   const debugStats = useMemo(() => {
     const keysFromServer = Object.keys(timetableByClase || {});
     let assignedTotal = 0;
     const perClass: Record<string, { assigned: number; sample: TimetableCell[] }> = {};
     for (const c of classes) {
-      const arr = normalizedTimetable[c.id] ?? Array(totalSlots).fill(null);
+      const arr = localTimetable[c.id] ?? Array(totalSlots).fill(null);
       const assigned = arr.filter(Boolean).length;
       assignedTotal += assigned;
       const sample = arr.filter(Boolean).slice(0, 3) as TimetableCell[];
       perClass[c.id] = { assigned, sample };
     }
     return { keysFromServer, assignedTotal, perClass };
-  }, [normalizedTimetable, classes, timetableByClase, totalSlots]);
+  }, [localTimetable, classes, timetableByClase, totalSlots]);
 
   const anyAssigned = debugStats.assignedTotal > 0;
   const hasServerKeys = Object.keys(timetableByClase || {}).length > 0;
@@ -143,17 +161,361 @@ export default function VistaGeneralHorario({
   // Usamos el prop timetablerMeta (si existe) para mostrar logs detallados en la vista
   const meta = timetablerMeta ?? null;
 
+  const unplacedDetails = useMemo(() => {
+    const fromApi = Array.isArray(meta?.unplacedInfo) ? meta.unplacedInfo : [];
+    if (fromApi.length > 0) return fromApi;
+
+    const unplacedIds: string[] = Array.isArray(meta?.unplaced) ? meta.unplaced : [];
+    if (unplacedIds.length === 0) return [];
+
+    const cargaById = new Map((institucion.cargas ?? []).map((c) => [c.id, c]));
+    const claseById = new Map((institucion.clases ?? []).map((c) => [c.id, c]));
+    const docenteById = new Map((institucion.docentes ?? []).map((d) => [d.id, d]));
+    const asignaturaById = new Map((institucion.asignaturas ?? []).map((a) => [a.id, a]));
+
+    return unplacedIds.map((lessonId) => {
+      const cargaId = String(lessonId).split("__")[0];
+      const carga = cargaById.get(cargaId);
+      const clase = carga ? claseById.get(carga.claseId) : undefined;
+      const docente = carga?.docenteId ? docenteById.get(carga.docenteId) : undefined;
+      const asignatura = carga ? asignaturaById.get(carga.asignaturaId) : undefined;
+
+      return {
+        lessonId,
+        cargaId,
+        asignatura: asignatura?.nombre ?? asignatura?.abreviatura ?? carga?.asignaturaId ?? "Asignatura",
+        docente: docente?.nombre ?? carga?.docenteId ?? "Sin docente",
+        clase: clase?.nombre ?? clase?.abreviatura ?? carga?.claseId ?? "Clase",
+        duracion: 1,
+      };
+    });
+  }, [meta, institucion.cargas, institucion.clases, institucion.docentes, institucion.asignaturas]);
+
+  type DragItem = {
+    id: string;
+    cargaId: string;
+    asignatura: string;
+    docente: string;
+    duracion: number;
+    claseId?: string;
+    sourceIndex?: number;
+    sourceType: "grid" | "unplaced" | "bank";
+    cell?: TimetableCell | null;
+  };
+
+  const [dragItem, setDragItem] = useState<DragItem | null>(null);
+  const [unplacedPool, setUnplacedPool] = useState<any[]>([]);
+  const [bankPool, setBankPool] = useState<any[]>([]);
+
+  useEffect(() => {
+    setUnplacedPool(unplacedDetails);
+    setBankPool([]);
+  }, [unplacedDetails]);
+
+  function buildItemFromCell(cell: TimetableCell, claseId: string, sourceIndex: number): DragItem {
+    return {
+      id: `grid-${cell.cargaId}-${claseId}-${sourceIndex}`,
+      cargaId: cell.cargaId,
+      asignatura: (cell as any).asignaturaNombre ?? cell.asignaturaId ?? "Asignatura",
+      docente: (cell as any).docenteNombre ?? cell.docenteId ?? "Sin docente",
+      duracion: (cell as any).duracion ?? 1,
+      claseId,
+      sourceIndex,
+      sourceType: "grid",
+      cell,
+    };
+  }
+
+  function getBlockStart(arr: Array<TimetableCell | null>, idx: number) {
+    let i = idx;
+    while (i > 0 && arr[i - 1]?.cargaId === arr[idx]?.cargaId) i -= 1;
+    return i;
+  }
+
+  function blockIndices(start: number, dur: number) {
+    return Array.from({ length: dur }, (_, i) => start + i);
+  }
+
+  function blockLength(arr: Array<TimetableCell | null>, start: number, cargaId: string) {
+    let len = 0;
+    for (let i = start; i < arr.length; i++) {
+      if (arr[i]?.cargaId !== cargaId) break;
+      len += 1;
+    }
+    return Math.max(1, len);
+  }
+
+  function canPlaceBlock(
+    arr: Array<TimetableCell | null>,
+    start: number,
+    dur: number,
+    ignore?: Set<number>
+  ) {
+    if (start + dur > arr.length) return false;
+    const dayStart = Math.floor(start / lecciones);
+    const dayEnd = Math.floor((start + dur - 1) / lecciones);
+    if (dayStart !== dayEnd) return false;
+    for (let i = 0; i < dur; i++) {
+      const idx = start + i;
+      if (arr[idx] && !ignore?.has(idx)) return false;
+    }
+    return true;
+  }
+
+  async function applyMoveOnServer(payload: any) {
+    const res = await fetch("/api/timetable/move", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error || "No se pudo aplicar el movimiento");
+    return data;
+  }
+
+  async function handleDropOnPool(target: "bank" | "unplaced") {
+    if (!dragItem) return;
+    if (dragItem.sourceType === target) return;
+
+    if (dragItem.sourceType !== "grid") {
+      const exists = Object.values(localTimetable).some((arr) =>
+        arr.some((cell) => cell?.cargaId === dragItem.cargaId)
+      );
+      if (exists) {
+        toast.error("Esa asignatura ya está colocada en la tabla.");
+        setDragItem(null);
+        return;
+      }
+    }
+
+    if (dragItem.sourceType === "grid" && dragItem.claseId != null && dragItem.sourceIndex != null) {
+      try {
+        const data = await applyMoveOnServer({
+          institucionId: institucion.id,
+          timetableByClase: localTimetable,
+          action: "remove",
+          source: {
+            sourceType: "grid",
+            claseId: dragItem.claseId,
+            index: dragItem.sourceIndex,
+            cargaId: dragItem.cargaId,
+          },
+        });
+        setLocalTimetable(data.timetable);
+      } catch (err: any) {
+        toast.error(err?.message ?? "No se pudo quitar el bloque.");
+        setDragItem(null);
+        return;
+      }
+    }
+
+    const item = {
+      lessonId: dragItem.id,
+      cargaId: dragItem.cargaId,
+      asignatura: dragItem.asignatura,
+      docente: dragItem.docente,
+      clase: dragItem.claseId ?? "Clase",
+      duracion: dragItem.duracion,
+    };
+
+    if (target === "bank") {
+      setBankPool((prev) => [...prev, item]);
+      if (dragItem.sourceType === "unplaced") {
+        setUnplacedPool((prev) => prev.filter((u: any) => u.lessonId !== dragItem.id));
+      } else if (dragItem.sourceType === "bank") {
+        setBankPool((prev) => prev.filter((u: any) => u.lessonId !== dragItem.id));
+      }
+    } else {
+      setUnplacedPool((prev) => [...prev, item]);
+      if (dragItem.sourceType === "bank") {
+        setBankPool((prev) => prev.filter((u: any) => u.lessonId !== dragItem.id));
+      } else if (dragItem.sourceType === "unplaced") {
+        setUnplacedPool((prev) => prev.filter((u: any) => u.lessonId !== dragItem.id));
+      }
+    }
+
+    setDragItem(null);
+  }
+
+  async function handleDropOnCell(claseId: string, targetIndex: number, targetOccupied = false) {
+    if (!dragItem) return;
+
+    if (targetOccupied && dragItem.sourceType !== "grid") {
+      toast.error("Solo se puede intercambiar con otra celda si el origen está en la tabla.");
+      setDragItem(null);
+      return;
+    }
+
+    if (dragItem.sourceType !== "grid") {
+      const exists = Object.values(localTimetable).some((arr) =>
+        arr.some((cell) => cell?.cargaId === dragItem.cargaId)
+      );
+      if (exists) {
+        toast.error("Esa asignatura ya está colocada en la tabla.");
+        setDragItem(null);
+        return;
+      }
+    }
+
+    try {
+      const data = await applyMoveOnServer({
+        institucionId: institucion.id,
+        timetableByClase: localTimetable,
+        action: "move",
+        source: {
+          sourceType: dragItem.sourceType === "grid" ? "grid" : "pool",
+          claseId: dragItem.claseId,
+          index: dragItem.sourceIndex,
+          cargaId: dragItem.cargaId,
+        },
+        target: { claseId, index: targetIndex },
+        swap: Boolean(targetOccupied),
+      });
+      const updated = data.timetable as Record<string, Array<TimetableCell | null>>;
+      if (!targetOccupied && dragItem.sourceType === "grid" && dragItem.claseId && dragItem.sourceIndex != null) {
+        const arr = [...(updated[dragItem.claseId] ?? [])];
+        const start = getBlockStart(arr, dragItem.sourceIndex);
+        if (arr[start]?.cargaId === dragItem.cargaId) {
+          const len = blockLength(arr, start, dragItem.cargaId);
+          const indices = blockIndices(start, len);
+          for (const idx of indices) arr[idx] = null;
+          updated[dragItem.claseId] = arr;
+        }
+      }
+      setLocalTimetable(updated);
+    } catch (err: any) {
+      toast.error(err?.message ?? "No se pudo mover el bloque.");
+      setDragItem(null);
+      return;
+    }
+
+    if (dragItem.sourceType === "unplaced") {
+      setUnplacedPool((prev) => prev.filter((u: any) => u.lessonId !== dragItem.id));
+    } else if (dragItem.sourceType === "bank") {
+      setBankPool((prev) => prev.filter((u: any) => u.lessonId !== dragItem.id));
+    }
+
+    setDragItem(null);
+  }
+
+  const horaLabels: string[] = useMemo(() => {
+    const p = (institucion as any).periodos ?? [];
+    if (Array.isArray(p) && p.length >= lecciones) {
+      return p.slice(0, lecciones).map((x: any, idx: number) => {
+        const inicio = x.hora_inicio ?? x.horaInicio;
+        const fin = x.hora_fin ?? x.horaFin;
+        if (inicio && fin) return `${inicio} - ${fin}`;
+        if (inicio) return inicio;
+        if (x.abreviatura) return x.abreviatura;
+        return `Slot ${x.indice ?? idx + 1}`;
+      });
+    }
+    const baseHour = 6;
+    return Array.from({ length: lecciones }, (_, i) => `${String(baseHour + i).padStart(2,"0")}:00`);
+  }, [institucion, lecciones]);
+
   return (
     <div className="p-4">
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-lg font-semibold">Vista general — {institucion.nombre}</h3>
         <div className="flex gap-2 items-center">
-          <Button onClick={() => onGenerate?.()} variant="outline">Generar/Regenerar</Button>
-          <Badge className="text-sm">Clases: {classes.length}</Badge>
           <Badge className="text-sm">Slots: {totalSlots}</Badge>
           <Badge className="text-sm">Asignados: {debugStats.assignedTotal}</Badge>
+          {onExportAll && (
+            <button
+              onClick={onExportAll}
+              className="px-3 py-1 rounded bg-muted hover:bg-muted/70 text-sm border"
+            >
+              Exportar PDF
+            </button>
+          )}
         </div>
       </div>
+
+      {unplacedPool.length > 0 && (
+        <div className="mb-4 flex flex-wrap gap-4 items-start">
+          <div
+            className="border rounded-md p-3 bg-muted/20 max-w-xl flex-1 min-w-[280px]"
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={() => handleDropOnPool("unplaced")}
+          >
+            <div className="flex items-center justify-between mb-2">
+              <h4 className="text-sm font-semibold">Asignaturas sin asignar</h4>
+              <Badge variant="outline" className="text-xs">
+                {unplacedPool.length}
+              </Badge>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {unplacedPool.map((u: any) => (
+                <div
+                  key={u.lessonId}
+                  className="px-2 py-1 rounded-md border bg-background text-xs flex items-center gap-2 cursor-grab active:cursor-grabbing"
+                  draggable
+                  onDragStart={(e) => {
+                    const item: DragItem = {
+                      id: u.lessonId,
+                      cargaId: u.cargaId,
+                      asignatura: u.asignatura,
+                      docente: u.docente,
+                      duracion: Number(u.duracion ?? 1),
+                      sourceType: "unplaced",
+                    };
+                    setDragItem(item);
+                    e.dataTransfer.setData("text/plain", JSON.stringify(item));
+                  }}
+                  onDragEnd={() => setDragItem(null)}
+                >
+                  <span className="font-medium">{u.asignatura}</span>
+                  <span className="text-muted-foreground">• {u.clase}</span>
+                  <span className="text-muted-foreground">• {u.docente}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div
+            className="border rounded-md p-3 bg-muted/10 max-w-4xl flex-[1.75] min-w-[360px]"
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={() => handleDropOnPool("bank")}
+          >
+            <div className="flex items-center justify-between mb-2">
+              <h4 className="text-sm font-semibold">Banco temporal</h4>
+              <Badge variant="outline" className="text-xs">
+                {bankPool.length}
+              </Badge>
+            </div>
+            {bankPool.length === 0 ? (
+              <div className="text-xs text-muted-foreground">Vacío</div>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {bankPool.map((u: any) => (
+                  <div
+                    key={u.lessonId}
+                    className="px-2 py-1 rounded-md border bg-background text-xs flex items-center gap-2 cursor-grab active:cursor-grabbing"
+                    draggable
+                    onDragStart={(e) => {
+                      const item: DragItem = {
+                        id: u.lessonId,
+                        cargaId: u.cargaId,
+                        asignatura: u.asignatura,
+                        docente: u.docente,
+                        duracion: Number(u.duracion ?? 1),
+                        sourceType: "bank",
+                      };
+                      setDragItem(item);
+                      e.dataTransfer.setData("text/plain", JSON.stringify(item));
+                    }}
+                    onDragEnd={() => setDragItem(null)}
+                  >
+                    <span className="font-medium">{u.asignatura}</span>
+                    <span className="text-muted-foreground">• {u.clase}</span>
+                    <span className="text-muted-foreground">• {u.docente}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       <div className="overflow-auto border rounded">
         <table className="min-w-full table-auto border-collapse">
@@ -169,7 +531,9 @@ export default function VistaGeneralHorario({
                 <th key={`sub-${i}`} className="p-0 border">
                   <div className="grid" style={{ gridTemplateColumns: `repeat(${lecciones}, minmax(96px,1fr))`, gap: "6px" }}>
                     {Array.from({ length: lecciones }).map((_, j) => (
-                      <div key={j} className="text-xs p-2 border text-center bg-muted/10">{j + 1}</div>
+                      <div key={j} className="text-xs p-2 border text-center bg-muted/10">
+                        {horaLabels[j] ?? j + 1}
+                      </div>
                     ))}
                   </div>
                 </th>
@@ -179,7 +543,7 @@ export default function VistaGeneralHorario({
 
           <tbody>
             {classes.map(({ id: claseId }) => {
-              const arr = normalizedTimetable[claseId] ?? Array(totalSlots).fill(null);
+              const arr = localTimetable[claseId] ?? Array(totalSlots).fill(null);
 
               return (
                 <tr key={claseId} className="border-t">
@@ -206,7 +570,12 @@ export default function VistaGeneralHorario({
 
                       if (!cell) {
                         items.push(
-                          <div key={`empty-${day}-${i}`} className="h-14 border rounded-sm flex items-center justify-center text-muted-foreground text-sm">
+                          <div
+                            key={`empty-${day}-${i}`}
+                            className="h-14 border rounded-sm flex items-center justify-center text-muted-foreground text-sm"
+                            onDragOver={(e) => e.preventDefault()}
+                            onDrop={() => handleDropOnCell(claseId, slotIdx, false)}
+                          >
                             &nbsp;
                           </div>
                         );
@@ -223,7 +592,16 @@ export default function VistaGeneralHorario({
                         <div
                           key={`cell-${day}-${i}-${seed}`}
                           style={{ gridColumn: `span ${Math.min(dur, lecciones - i)}` }}
-                          className={`${bg} text-white p-2 rounded-lg shadow-sm flex flex-col justify-center`}
+                          className={`${bg} text-white p-2 rounded-lg shadow-sm flex flex-col justify-center cursor-grab active:cursor-grabbing`}
+                          draggable
+                          onDragStart={(e) => {
+                            const item = buildItemFromCell(cell, claseId, slotIdx);
+                            setDragItem(item);
+                            e.dataTransfer.setData("text/plain", JSON.stringify(item));
+                          }}
+                          onDragOver={(e) => e.preventDefault()}
+                          onDrop={() => handleDropOnCell(claseId, slotIdx, true)}
+                          onDragEnd={() => setDragItem(null)}
                         >
                           <div className="font-semibold text-sm leading-tight truncate">{(cell as any).asignaturaNombre ?? cell.asignaturaId}</div>
                           <div className="text-[11px] opacity-90 mt-1 truncate">{(cell as any).docenteNombre ?? cell.docenteId ?? "-"}</div>
