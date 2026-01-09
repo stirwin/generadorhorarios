@@ -1,5 +1,8 @@
 // app/api/instituciones/[id]/route.ts
 import { NextResponse } from "next/server";
+
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 import { prisma } from "@/lib/prisma";
 
 export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }> | { id: string } }) {

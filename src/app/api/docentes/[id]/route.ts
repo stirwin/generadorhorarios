@@ -1,5 +1,8 @@
 // app/api/docentes/[id]/route.ts
 import { NextResponse, NextRequest } from "next/server";
+
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 import { prisma } from "@/lib/prisma";
 
 type Bloqueo = { dia: number; periodo: number };

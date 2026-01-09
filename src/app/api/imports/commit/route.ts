@@ -1,5 +1,8 @@
 // app/api/imports/commit/route.ts
 import { NextResponse } from "next/server";
+
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 import { prisma } from "@/lib/prisma";
 
 export async function POST(request: Request) {
