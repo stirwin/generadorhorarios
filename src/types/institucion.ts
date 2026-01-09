@@ -16,6 +16,16 @@ export interface Docente {
   id: string;
   nombre: string;
   abreviatura?: string;
+  direccionGrupoId?: string | null;
+  restricciones?: DocenteRestriccion[];
+}
+
+export interface DocenteRestriccion {
+  id: string;
+  dia: number;
+  periodoInicio: number;
+  periodoFin: number;
+  tipo: string;
 }
 
 export interface Asignatura {

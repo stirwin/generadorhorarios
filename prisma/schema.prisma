@@ -20,6 +20,7 @@ model Institucion {
   clases           Clase[]
   asignaturas      Asignatura[]
   cargas           CargaAcademica[]
+  horarios         Horario[]
   imports          ImportJob[]
 }
 
@@ -39,9 +40,13 @@ model Docente {
   nombre        String
   abreviatura   String   @unique
   activo        Boolean  @default(true)
+  direccionGrupoId String?
   institucionId String
   institucion   Institucion @relation(fields: [institucionId], references: [id])
+  direccionGrupo Clase? @relation("DocenteDireccionGrupo", fields: [direccionGrupoId], references: [id])
   cargas        CargaAcademica[]
+  restricciones DocenteRestriccion[]
+  horarioSlots  HorarioSlot[]
 }
 
 model Clase {
@@ -51,6 +56,8 @@ model Clase {
   institucionId String
   institucion   Institucion @relation(fields: [institucionId], references: [id])
   cargas        CargaAcademica[]
+  directores    Docente[] @relation("DocenteDireccionGrupo")
+  horarioSlots  HorarioSlot[]
 }
 
 model Asignatura {
@@ -60,6 +67,7 @@ model Asignatura {
   institucionId String
   institucion   Institucion @relation(fields: [institucionId], references: [id])
   cargas        CargaAcademica[]
+  horarioSlots  HorarioSlot[]
 }
 
 model CargaAcademica {
@@ -74,6 +82,7 @@ model CargaAcademica {
   clase         Clase      @relation(fields: [claseId], references: [id])
   docente       Docente?   @relation(fields: [docenteId], references: [id])
   institucion   Institucion @relation(fields: [institucionId], references: [id])
+  horarioSlots  HorarioSlot[]
 }
 
 model ImportJob {
@@ -85,4 +94,40 @@ model ImportJob {
   errores       String?  // errores en texto (si aplica)
   createdAt     DateTime @default(now())
   institucion   Institucion @relation(fields: [institucionId], references: [id])
+}
+
+model DocenteRestriccion {
+  id         String   @id @default(cuid())
+  docenteId  String
+  dia        Int      // 0..6
+  periodoInicio Int   // slot inicio dentro del dia
+  periodoFin Int      // slot fin (inclusive)
+  tipo       String   // bloqueo | permitido
+  docente    Docente  @relation(fields: [docenteId], references: [id])
+}
+
+model Horario {
+  id            String   @id @default(cuid())
+  institucionId String
+  nombre        String?
+  createdAt     DateTime @default(now())
+  institucion   Institucion @relation(fields: [institucionId], references: [id])
+  slots         HorarioSlot[]
+}
+
+model HorarioSlot {
+  id          String   @id @default(cuid())
+  horarioId   String
+  claseId     String
+  cargaId     String
+  docenteId   String?
+  asignaturaId String
+  dia         Int
+  periodo     Int
+  duracion    Int
+  horario     Horario  @relation(fields: [horarioId], references: [id])
+  clase       Clase    @relation(fields: [claseId], references: [id])
+  carga       CargaAcademica @relation(fields: [cargaId], references: [id])
+  docente     Docente? @relation(fields: [docenteId], references: [id])
+  asignatura  Asignatura @relation(fields: [asignaturaId], references: [id])
 }

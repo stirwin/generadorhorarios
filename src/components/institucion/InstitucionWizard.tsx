@@ -55,6 +55,7 @@ export default function InstitucionWizard() {
   const [timetable, setTimetable] = useState<Record<string, Array<TimetableCell | null>> | null>(null);
   const [loadingTimetable, setLoadingTimetable] = useState(false);
   const [timetableStats, setTimetableStats] = useState<any | null>(null);
+  const [horarioId, setHorarioId] = useState<string | null>(null);
 
   // NUEVO: metadatos / debug del timetabler (se muestran en la UI)
   const [timetableMeta, setTimetableMeta] = useState<any | null>(null);
@@ -106,6 +107,30 @@ export default function InstitucionWizard() {
   useEffect(() => {
     fetchInstituciones();
   }, []);
+
+  async function fetchLatestHorario(institucionId: string) {
+    try {
+      const res = await fetch(`/api/timetable/latest?institucionId=${encodeURIComponent(institucionId)}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const returnedTimetable = (data && typeof data === "object" && data.timetable && typeof data.timetable === "object")
+        ? (data.timetable as Record<string, Array<TimetableCell | null>>)
+        : null;
+      if (returnedTimetable && Object.keys(returnedTimetable).length > 0) {
+        setTimetable(returnedTimetable);
+        setTimetableStats(data?.stats ?? null);
+        setHorarioId(typeof data?.horarioId === "string" ? data.horarioId : null);
+      }
+    } catch (err) {
+      console.warn("fetchLatestHorario error:", err);
+    }
+  }
+
+  useEffect(() => {
+    if (!institucionSeleccionada?.id) return;
+    if (timetable) return;
+    fetchLatestHorario(institucionSeleccionada.id);
+  }, [institucionSeleccionada?.id, timetable]);
 
   // Ajustar periodos cuando cambian leccionesPorDia
   useEffect(() => {
@@ -267,6 +292,7 @@ export default function InstitucionWizard() {
       // Agrega conteo de no asignadas para mostrarlo rápido en UI
       const unplacedFromServer = Array.isArray(data?.unplaced) ? data.unplaced : (Array.isArray(data?.debug?.unplaced) ? data.debug.unplaced : []);
       setTimetableStats(data?.stats ? { ...data.stats, unplacedCount: unplacedFromServer.length } : null);
+      setHorarioId(null);
 
       // ---------- NUEVO: extraer metadatos / debug ----------
       const metaCandidate = data?.debug
@@ -300,6 +326,44 @@ export default function InstitucionWizard() {
     } catch (err: any) {
       console.error("handleGenerateTimetable error:", err);
       alert("No se pudo generar el horario: " + (err?.message ?? String(err)));
+    } finally {
+      setLoadingTimetable(false);
+    }
+  }
+
+  async function handleSaveTimetable() {
+    if (!institucionSeleccionada) {
+      alert("Selecciona una institución antes de guardar el horario.");
+      return;
+    }
+    if (!timetable || Object.keys(timetable).length === 0) {
+      alert("Primero genera un horario antes de guardar.");
+      return;
+    }
+
+    setLoadingTimetable(true);
+    try {
+      const res = await fetch("/api/timetable/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          institucionId: institucionSeleccionada.id,
+          timetable,
+        }),
+      });
+
+      const contentType = (res.headers.get("content-type") || "").toLowerCase();
+      const data = contentType.includes("application/json") ? await res.json() : await res.text();
+
+      if (!res.ok) {
+        const message = typeof data === "object" && data?.error ? String(data.error) : String(data);
+        throw new Error(message || `Status ${res.status}`);
+      }
+
+      setHorarioId(typeof data?.horarioId === "string" ? data.horarioId : null);
+    } catch (err: any) {
+      console.error("handleSaveTimetable error:", err);
+      alert("No se pudo guardar el horario: " + (err?.message ?? String(err)));
     } finally {
       setLoadingTimetable(false);
     }
@@ -379,6 +443,7 @@ export default function InstitucionWizard() {
                       setTimetable(null);
                       setTimetableStats(null);
                       setTimetableMeta(null);
+                      setHorarioId(null);
                     }}
                   >
                     <div className="flex justify-between items-center">
@@ -444,14 +509,28 @@ export default function InstitucionWizard() {
                     </p>
                   )}
                 </div>
-                <Button
-                  size="sm"
-                  className="ml-auto"
-                  disabled={!institucionSeleccionada || loadingTimetable}
-                  onClick={handleGenerateTimetable}
-                >
-                  {loadingTimetable ? "Generando..." : "Generar horario"}
-                </Button>
+                <div className="ml-auto flex flex-col items-end gap-2">
+                  <Button
+                    size="sm"
+                    disabled={!institucionSeleccionada || loadingTimetable}
+                    onClick={() => handleGenerateTimetable()}
+                  >
+                    {loadingTimetable ? "Generando..." : "Generar horario"}
+                  </Button>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={!institucionSeleccionada || loadingTimetable || !timetable}
+                      onClick={handleSaveTimetable}
+                    >
+                      Guardar horario
+                    </Button>
+                    <span className="text-[11px] text-muted-foreground">
+                      {horarioId ? `Guardado: ${horarioId}` : "No guardado"}
+                    </span>
+                  </div>
+                </div>
               </CardContent>
             </Card>
 

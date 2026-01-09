@@ -2,7 +2,7 @@
 
 import { Building2, Home, Users, BookOpen, Calendar, Settings, GraduationCap } from "lucide-react"
 import { cn } from "@/lib/utils"
-import type { VistaNavegacion, Institucion } from "@/app/page"
+import type { Institucion } from "@/types/institucion"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 
 interface PropsBarra {
@@ -12,6 +12,8 @@ interface PropsBarra {
   onSeleccionarInstitucion: (institucion: Institucion | null) => void
   instituciones: Institucion[]
 }
+
+type VistaNavegacion = "panel" | "docentes" | "cursos" | "asignaturas" | "horario" | "configuracion"
 
 export function BarraLateral({
   vistaActual,
@@ -23,7 +25,7 @@ export function BarraLateral({
   // Definición de los elementos de navegación
   const itemsNavegacion = [
     { id: "panel" as const, etiqueta: "Dashboard", icono: Home, deshabilitado: false },
-    { id: "docentes" as const, etiqueta: "Docentes", icono: Users, deshabilitado: !institucionSeleccionada },
+    { id: "docentes" as const, etiqueta: "Docentes", icono: Users, deshabilitado: false },
     { id: "cursos" as const, etiqueta: "Cursos", icono: BookOpen, deshabilitado: !institucionSeleccionada },
     {
       id: "asignaturas" as const,

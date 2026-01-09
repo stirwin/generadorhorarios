@@ -9,7 +9,12 @@ export async function GET() {
       orderBy: { createdAt: 'desc' },
       include: {
         periodos: true,
-        docentes: true,
+        docentes: {
+          include: {
+            restricciones: true,
+            direccionGrupo: true,
+          },
+        },
         clases: true,
         asignaturas: true,
         cargas: true
