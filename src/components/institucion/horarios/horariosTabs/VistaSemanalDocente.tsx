@@ -37,9 +37,18 @@ export default function VistaSemanalDocente({
     return map;
   }, [classes]);
 
+  const normalizedTable = useMemo(() => {
+    const out: Record<string, Array<TimetableCell | null>> = {};
+    if (!timetableByClase) return out;
+    for (const [key, arr] of Object.entries(timetableByClase)) {
+      out[key] = Array.isArray(arr) ? arr : [];
+    }
+    return out;
+  }, [timetableByClase]);
+
   // Construir lista de docentes desde el horario
   const teachers: Teacher[] = useMemo(() => {
-    const table = timetableByClase ?? {};
+    const table = normalizedTable;
     const map = new Map<string, string>();
     for (const arr of Object.values(table)) {
       if (!arr) continue;
@@ -60,7 +69,7 @@ export default function VistaSemanalDocente({
   const matrix = useMemo(() => {
     if (!selectedTeacherId) return Array(dias * lecciones).fill(null);
     const out: Array<(TimetableCell & { claseNombre?: string }) | null> = Array(dias * lecciones).fill(null);
-    const table = timetableByClase ?? {};
+    const table = normalizedTable;
 
     for (const [claseId, arr] of Object.entries(table)) {
       if (!arr) continue;
@@ -84,7 +93,7 @@ export default function VistaSemanalDocente({
       });
     }
     return out;
-  }, [selectedTeacherId, timetableByClase, dias, lecciones, classNameById]);
+  }, [selectedTeacherId, normalizedTable, dias, lecciones, classNameById]);
 
   // Asignaturas impartidas por el docente (derivadas)
   const asignaturasDelDocente = useMemo(() => {
@@ -147,7 +156,7 @@ export default function VistaSemanalDocente({
 
   const handlePreview = () => selectedTeacherId && onPreview?.(selectedTeacherId);
   const handleExport = () => selectedTeacherId && onExport?.(selectedTeacherId);
-  const handleSave = () => selectedTeacherId && onSave?.(selectedTeacherId, timetableByClase ?? undefined);
+  const handleSave = () => selectedTeacherId && onSave?.(selectedTeacherId, Object.keys(normalizedTable).length ? normalizedTable : undefined);
 
   return (
     <div className="p-6">

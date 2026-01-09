@@ -605,6 +605,13 @@ export default function VistaGeneralHorario({
                         >
                           <div className="font-semibold text-sm leading-tight truncate">{(cell as any).asignaturaNombre ?? cell.asignaturaId}</div>
                           <div className="text-[11px] opacity-90 mt-1 truncate">{(cell as any).docenteNombre ?? cell.docenteId ?? "-"}</div>
+                          {(cell as any).fixed && (
+                            <div className="mt-1">
+                              <Badge variant="secondary" className="bg-white/20 text-white border-white/30">
+                                {(cell as any).fixedLabel ?? "Dirección de grupo"}
+                              </Badge>
+                            </div>
+                          )}
                           {dur > 1 && <div className="text-[11px] opacity-80 mt-1">{dur} slot{dur > 1 ? "s" : ""}</div>}
                         </div>
                       );

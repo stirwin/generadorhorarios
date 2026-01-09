@@ -18,6 +18,8 @@ export type TimetableCell = {
   claseId: string;
   claseNombre?: string;
   duracion?: number;
+  fixed?: boolean;
+  fixedLabel?: string;
 };
 
 export type TimetableResult = {
@@ -67,11 +69,17 @@ export function generateTimetable(
     maxBacktracks?: number;
     timeLimitMs?: number;
     maxRestarts?: number;
+    teacherBlockedSlots?: Record<string, boolean[]>;
+    forcedStarts?: Record<string, number>;
+    forcedLabels?: Record<string, string>;
   }
 ): TimetableResult {
   const maxBacktracks = options?.maxBacktracks ?? 600000;
   const timeLimitMs = options?.timeLimitMs ?? 120000;
   const maxRestarts = options?.maxRestarts ?? 12;
+  const teacherBlockedSlots = options?.teacherBlockedSlots ?? {};
+  const forcedStarts = options?.forcedStarts ?? {};
+  const forcedLabels = options?.forcedLabels ?? {};
 
   const startTime = Date.now();
   const totalSlots = days * slotsPerDay;
@@ -195,10 +203,12 @@ export function generateTimetable(
     if ((subjectDayCount[subjectKey]?.[day] ?? 0) > 0) return false;
     const classArr = classOcc[L.claseId];
     if (!classArr) return false;
+    const blockedArr = L.docenteId ? teacherBlockedSlots[L.docenteId] : null;
     for (let p = 0; p < L.duracion; p++) {
       const idx = start + p;
       if (!inBounds(idx)) return false;
       if (classArr[idx]) return false;
+      if (blockedArr && blockedArr[idx]) return false;
       if (L.docenteId) {
         const tArr = teacherOcc[L.docenteId];
         if (tArr && tArr[idx]) return false;
@@ -209,6 +219,8 @@ export function generateTimetable(
 
   function placeLesson(L: LessonItem, start: number) {
     const day = dayOfSlot(start);
+    const isForced = typeof forcedStarts[L.id] === "number";
+    const fixedLabel = forcedLabels[L.id];
     for (let p = 0; p < L.duracion; p++) {
       const idx = start + p;
       classOcc[L.claseId][idx] = true;
@@ -219,6 +231,8 @@ export function generateTimetable(
         docenteId: L.docenteId ?? null,
         claseId: L.claseId,
         duracion: L.duracion,
+        fixed: isForced,
+        fixedLabel,
       };
     }
     const subjectKey = subjectKeyForLesson(L);
@@ -240,6 +254,10 @@ export function generateTimetable(
   function getValidStarts(L: LessonItem) {
     const domain = baseDomains.get(L.id) ?? [];
     const valid: number[] = [];
+    const forcedStart = forcedStarts[L.id];
+    if (typeof forcedStart === "number") {
+      return canPlaceLesson(L, forcedStart) ? [forcedStart] : [];
+    }
     for (const start of domain) {
       if (canPlaceLesson(L, start)) valid.push(start);
     }
@@ -414,6 +432,7 @@ export function generateTimetable(
       maxBacktracks,
       subjectCounts,
       classCapacity,
+      forcedStarts,
     },
   };
 }

@@ -3,8 +3,8 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
-  url      = "file:./dev.db"
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 model Institucion {
@@ -13,6 +13,7 @@ model Institucion {
   ciclo_escolar    String?
   dias_por_semana  Int     @default(5)
   lecciones_por_dia Int    @default(7)
+  director_lunes_primera Boolean @default(true)
   creador          String?
   createdAt        DateTime @default(now())
   periodos         DefinicionPeriodo[]

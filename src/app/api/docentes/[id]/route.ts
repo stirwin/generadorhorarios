@@ -1,5 +1,5 @@
 // app/api/docentes/[id]/route.ts
-import { NextResponse } from "next/server";
+import { NextResponse, NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 
 type Bloqueo = { dia: number; periodo: number };
@@ -34,9 +34,9 @@ function buildRanges(bloqueos: Bloqueo[]) {
   return ranges;
 }
 
-export async function PATCH(req: Request, { params }: { params: { id: string } }) {
+export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   try {
-    const docenteId = params.id;
+    const { id: docenteId } = await ctx.params;
     const body = await req.json();
     const nombre = typeof body?.nombre === "string" ? body.nombre : null;
     const abreviatura = typeof body?.abreviatura === "string" ? body.abreviatura : null;

@@ -1,7 +1,7 @@
 import { Plus, Pencil, Trash2, Users } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import type { Institucion } from "@/app/page"
+import type { Institucion } from "@/types/institucion"
 
 interface PropsCursos {
   institucion: Institucion

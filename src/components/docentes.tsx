@@ -30,6 +30,7 @@ export function Docentes({ institucion, instituciones, onSeleccionarInstitucion,
   const docentes = institucion?.docentes ?? []
   const [editOpen, setEditOpen] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [updatingDirectorRule, setUpdatingDirectorRule] = useState(false)
   const [form, setForm] = useState<EditableDocente | null>(null)
   const [availability, setAvailability] = useState<boolean[][]>([])
 
@@ -40,6 +41,7 @@ export function Docentes({ institucion, instituciones, onSeleccionarInstitucion,
   const clasesOptions = useMemo(() => {
     return (institucion?.clases ?? []).map((c) => ({ id: c.id, nombre: c.nombre }))
   }, [institucion?.clases])
+  const directorRuleEnabled = institucion?.director_lunes_primera !== false
 
   function buildAvailabilityFromDocente(docente: EditableDocente) {
     const base = Array.from({ length: dias }).map(() => Array.from({ length: slotsPerDay }).map(() => true))
@@ -109,6 +111,28 @@ export function Docentes({ institucion, instituciones, onSeleccionarInstitucion,
     }
   }
 
+  async function toggleDirectorRule() {
+    if (!institucion) return
+    const nextValue = !directorRuleEnabled
+    setUpdatingDirectorRule(true)
+    try {
+      const res = await fetch(`/api/instituciones/${institucion.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ director_lunes_primera: nextValue }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data?.error || `Status ${res.status}`)
+      }
+      onRefetch()
+    } catch (err: any) {
+      alert("No se pudo actualizar la regla: " + (err?.message ?? String(err)))
+    } finally {
+      setUpdatingDirectorRule(false)
+    }
+  }
+
   return (
     <div className="p-8">
       <div className="max-w-7xl mx-auto">
@@ -120,10 +144,20 @@ export function Docentes({ institucion, instituciones, onSeleccionarInstitucion,
               {institucion ? `${institucion.nombre} - Gestión de profesores` : "Selecciona una institución"}
             </p>
           </div>
-          <Button>
-            <Plus className="w-4 h-4 mr-2" />
-            Agregar Docente
-          </Button>
+          <div className="flex flex-col items-end gap-2">
+            <div className="flex items-center gap-2">
+              <Badge variant={directorRuleEnabled ? "default" : "secondary"}>
+                {directorRuleEnabled ? "Directores: Lunes 1ra" : "Directores: libre"}
+              </Badge>
+              <Button variant="outline" size="sm" onClick={toggleDirectorRule} disabled={!institucion || updatingDirectorRule}>
+                {directorRuleEnabled ? "Desactivar regla" : "Activar regla"}
+              </Button>
+            </div>
+            <Button>
+              <Plus className="w-4 h-4 mr-2" />
+              Agregar Docente
+            </Button>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-6">

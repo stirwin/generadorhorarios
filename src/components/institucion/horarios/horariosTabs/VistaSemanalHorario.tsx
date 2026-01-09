@@ -150,7 +150,12 @@ export default function VistaSemanalHorario({
   };
   const handleSave = () => {
     if (!selectedClassId) return;
-    onSave?.(selectedClassId, timetableByClase ?? undefined);
+    const normalized: Record<string, Array<TimetableCell | null>> = {};
+    const table = timetableByClase ?? {};
+    for (const [key, arr] of Object.entries(table)) {
+      normalized[key] = Array.isArray(arr) ? arr : [];
+    }
+    onSave?.(selectedClassId, Object.keys(normalized).length ? normalized : undefined);
   };
 
   return (

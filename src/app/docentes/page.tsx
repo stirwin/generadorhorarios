@@ -21,13 +21,22 @@ export default function DocentesPage() {
       const data = await res.json();
       const list = Array.isArray(data) ? data : [];
       setInstituciones(list);
-      if (institucion && !list.find((i: any) => i.id === institucion.id)) {
-        setInstitucion(null);
-      }
+      setInstitucion((prev) => {
+        if (!prev) return prev;
+        const updated = list.find((i: any) => i.id === prev.id);
+        if (!updated) return null;
+        const sameCounts =
+          (updated.docentes?.length ?? 0) === (prev.docentes?.length ?? 0) &&
+          (updated.clases?.length ?? 0) === (prev.clases?.length ?? 0) &&
+          (updated.cargas?.length ?? 0) === (prev.cargas?.length ?? 0) &&
+          (updated.asignaturas?.length ?? 0) === (prev.asignaturas?.length ?? 0) &&
+          updated.director_lunes_primera === prev.director_lunes_primera;
+        return sameCounts ? prev : updated;
+      });
     } catch {
       // silencio
     }
-  }, [institucion]);
+  }, []);
 
   useEffect(() => {
     cargarInstituciones();

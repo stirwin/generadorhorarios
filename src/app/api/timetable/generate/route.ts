@@ -17,6 +17,28 @@ export async function POST(req: Request) {
 
     const days = institucion.dias_por_semana ?? 5;
     const slotsPerDay = institucion.lecciones_por_dia ?? 7;
+    const totalSlots = days * slotsPerDay;
+
+    const docentes = await prisma.docente.findMany({
+      where: { institucionId },
+      include: { restricciones: true },
+    });
+    const teacherBlockedSlots: Record<string, boolean[]> = {};
+    for (const d of docentes) {
+      if (!d.restricciones || d.restricciones.length === 0) continue;
+      const arr = Array(totalSlots).fill(false);
+      for (const r of d.restricciones) {
+        if (r.tipo !== "bloqueo") continue;
+        if (r.dia < 0 || r.dia >= days) continue;
+        const start = Math.max(0, r.periodoInicio);
+        const end = Math.min(slotsPerDay - 1, r.periodoFin);
+        for (let p = start; p <= end; p++) {
+          const idx = r.dia * slotsPerDay + p;
+          if (idx >= 0 && idx < totalSlots) arr[idx] = true;
+        }
+      }
+      teacherBlockedSlots[d.id] = arr;
+    }
 
     // Cargar cargas con relaciones
     const cargas = await prisma.cargaAcademica.findMany({
@@ -65,6 +87,46 @@ export async function POST(req: Request) {
       }
     }
 
+    // Restriccion: director de grupo siempre lunes primera hora con su clase (si está activada)
+    const forcedStarts: Record<string, number> = {};
+    const forcedLabels: Record<string, string> = {};
+    const forcedConflicts: Array<{ docenteId: string; claseId: string; reason: string }> = [];
+    const mondayStart = 0;
+    const applyDirectorRule = institucion.director_lunes_primera !== false;
+
+    const directorMap = new Map<string, string>();
+    for (const d of docentes) {
+      if (d.direccionGrupoId) directorMap.set(d.id, d.direccionGrupoId);
+    }
+
+    if (applyDirectorRule) {
+      for (const [docenteId, claseId] of directorMap.entries()) {
+        const candidates = lessons.filter((l) => l.docenteId === docenteId && l.claseId === claseId);
+        if (candidates.length === 0) {
+          forcedConflicts.push({ docenteId, claseId, reason: "sin lecciones del docente en su grupo" });
+          continue;
+        }
+        const sorted = candidates.slice().sort((a, b) => a.duracion - b.duracion);
+        const chosen = sorted[0];
+        const blocked = teacherBlockedSlots[docenteId];
+        const requiredSlots = chosen.duracion;
+        let blockedConflict = false;
+        for (let p = 0; p < requiredSlots; p++) {
+          const idx = mondayStart + p;
+          if (blocked && blocked[idx]) {
+            blockedConflict = true;
+            break;
+          }
+        }
+        if (blockedConflict) {
+          forcedConflicts.push({ docenteId, claseId, reason: "slot lunes 1 bloqueado por restricciones" });
+          continue;
+        }
+        forcedStarts[chosen.id] = mondayStart;
+        forcedLabels[chosen.id] = "Dir. grupo (Lun 1ra)";
+      }
+    }
+
     // cargar lista ordenada de clases
     const clases = await prisma.clase.findMany({ where: { institucionId } });
     const cls = clases.map((c) => ({ id: c.id, nombre: c.nombre }));
@@ -86,9 +148,11 @@ export async function POST(req: Request) {
     // Ejecutar generador: habilita relaxTeacherConstraints si lo pasas en body (opcional)
     const result = generateTimetable(institucionId, cls, lessons, days, slotsPerDay, {
       maxBacktracks: Number(body?.maxBacktracks) || 1600000,
-      timeLimitMs: Number(body?.timeLimitMs) || 120000,
-      relaxTeacherConstraints: Boolean(body?.relaxTeacherConstraints),
-      forcePlaceRemaining: Boolean(body?.forcePlaceRemaining), // default: false
+      timeLimitMs: Number(body?.timeLimitMs) || 180000,
+      maxRestarts: Number(body?.maxRestarts) || 40,
+      teacherBlockedSlots,
+      forcedStarts,
+      forcedLabels,
     });
 
     // Map de clases para nombres/abreviaturas
@@ -178,6 +242,10 @@ export async function POST(req: Request) {
       timetablerMeta: result.meta ?? null,
       classLoad,
       overCapacityClasses,
+      forcedDirector: {
+        forcedCount: Object.keys(forcedStarts).length,
+        conflicts: forcedConflicts,
+      },
     };
 
     // Also console.log debugging summary small

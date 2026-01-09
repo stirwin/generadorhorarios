@@ -8,7 +8,7 @@ import { Download, FileText, Save, Eye } from "lucide-react";
 import { toast } from "sonner";
 
 type PreviewShape = {
-  conteos: { docentes: number; clases: number; asignaturas: number; cargas: number };
+  conteos: { docentes: number; clases: number; cursos?: number; asignaturas: number; cargas: number };
   docentes?: { nombre: string; abreviatura: string }[];
   clases?: { nombre: string; abreviatura: string }[];
   asignaturas?: { nombre: string; abreviatura: string }[];
@@ -218,7 +218,7 @@ export function ImportadorExcel({
           <div className="flex items-center justify-between mb-3">
             <div>
               <h4 className="font-semibold">Preview</h4>
-              <div className="text-sm text-muted-foreground">Docentes: {editedPreview.conteos.docentes} • Cursos: {editedPreview.conteos.cursos} • Asignaturas: {editedPreview.conteos.asignaturas} • Cargas: {editedPreview.conteos.cargas}</div>
+              <div className="text-sm text-muted-foreground">Docentes: {editedPreview.conteos.docentes} • Clases: {editedPreview.conteos.clases ?? editedPreview.conteos.cursos ?? 0} • Asignaturas: {editedPreview.conteos.asignaturas} • Cargas: {editedPreview.conteos.cargas}</div>
             </div>
             <div className="text-sm">
               <span className="mr-3">Preview guardada: {previewSaved ? "Sí" : "No"}</span>

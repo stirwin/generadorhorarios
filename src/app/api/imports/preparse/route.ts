@@ -140,10 +140,8 @@ export async function POST(request: Request) {
     }
 
     const arrayBuffer = await file.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-
     const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.load(buffer);
+    await workbook.xlsx.load(arrayBuffer as any);
 
     // ===========================
     // 1️⃣ Localizar hojas
@@ -178,7 +176,27 @@ export async function POST(request: Request) {
       return rows;
     }
 
-    const docentes = parseDosColumnas(docentesSheet, "nombre", "abreviatura");
+    function parseDocentes(sheet: any) {
+      const rows: any[] = [];
+      const headerRow = sheet.getRow(1);
+      const headerValues = Array.isArray(headerRow?.values) ? headerRow.values : [];
+      const headerNormalized = headerValues.map((v: any) => getCellString({ value: v }).toUpperCase());
+      const hasClaseAbrev = headerNormalized.includes("CLASEABREV");
+
+      sheet.eachRow((row: any, rowNumber: number) => {
+        if (rowNumber === 1) return; // header
+        const nombre = getCellString(row.getCell(1));
+        const abreviatura = getCellString(row.getCell(2));
+        const claseAbrev = hasClaseAbrev ? getCellString(row.getCell(3)) : "";
+        if (!nombre && !abreviatura && !claseAbrev) return;
+        const rowData: any = { fila: rowNumber, nombre, abreviatura };
+        if (hasClaseAbrev) rowData.claseAbrev = claseAbrev;
+        rows.push(rowData);
+      });
+      return rows;
+    }
+
+    const docentes = parseDocentes(docentesSheet);
     const clases = parseDosColumnas(clasesSheet, "nombre", "abreviatura");
     const asignaturas = parseDosColumnas(asignaturasSheet, "nombre", "abreviatura");
 
@@ -241,6 +259,12 @@ export async function POST(request: Request) {
     const clasesAbrevSet = new Set(clases.map((c) => normalizarClave(c.abreviatura)));
     const asignAbrevSet = new Set(asignaturas.map((a) => normalizarClave(a.abreviatura)));
     const asignNameSet = new Set(asignaturas.map((a) => normalizarClave(a.nombre)));
+
+    docentes.forEach((d) => {
+      if (d.claseAbrev && !clasesAbrevSet.has(normalizarClave(d.claseAbrev))) {
+        errors.push(`Docente fila ${d.fila}: CLASEABREV '${d.claseAbrev}' no existe en hoja Clases`);
+      }
+    });
 
     cargas.forEach((c) => {
       if (!c.asignatura) errors.push(`Carga fila ${c.fila}: ASIGNATURA vacío`);

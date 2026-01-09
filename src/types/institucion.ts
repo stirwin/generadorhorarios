@@ -63,6 +63,7 @@ type Periodo = {
   dias_por_semana?: number;
   leccionesPorDia: number;
   lecciones_por_dia?: number;
+  director_lunes_primera?: boolean;
   estadoHorario: EstadoHorario;
   creadaEn?: string;
   actualizadaEn?: string;

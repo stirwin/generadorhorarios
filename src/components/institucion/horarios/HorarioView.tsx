@@ -1,7 +1,6 @@
 "use client";
 
-import React, { useMemo, useState, useEffect } from "react";
-import { Button } from "@/components/ui/button";
+import { useMemo, useState, useEffect } from "react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import VistaGeneralHorario from "./horariosTabs/GeneralHorario";

@@ -6,7 +6,6 @@ import { useRouter } from "next/navigation";
 import type { Institucion } from "@/types/institucion";
 import { BarraLateral } from "@/components/barra-lateral";
 import { Cursos } from "@/components/cursos";
-import { Asignaturas } from "@/components/asignaturas";
 import { Configuracion } from "@/components/configuracion";
 import InstitucionWizard from "@/components/institucion/InstitucionWizard";
 
@@ -73,7 +72,6 @@ export default function HomePage() {
       <main className="flex-1 overflow-auto">
         {vistaActual === "panel" && <InstitucionWizard />}
         {vistaActual === "cursos" && institucion && <Cursos institucion={institucion} />}
-        {vistaActual === "asignaturas" && institucion && <Asignaturas institucion={institucion} />}
         {vistaActual === "horario" && <InstitucionWizard />}
         {vistaActual === "configuracion" && <Configuracion />}
       </main>
