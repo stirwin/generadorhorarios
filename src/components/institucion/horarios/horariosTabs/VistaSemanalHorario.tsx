@@ -102,6 +102,8 @@ export default function VistaSemanalHorario({
 
   // Nombres de dias (slice por dias)
   const diasNombres = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"].slice(0, dias);
+  const rowHeightPx = 64;
+  const headerHeightPx = 40;
 
   // helpers para rowSpan:
   // Es inicio de bloque si la celda existe y la anterior en la misma columna NO corresponde a la misma lessonId
@@ -201,13 +203,22 @@ export default function VistaSemanalHorario({
           </CardHeader>
 
           <CardContent>
-            <div className="overflow-x-auto">
+            <div className="relative overflow-x-auto">
+              <div
+                className="pointer-events-none absolute left-0 right-0"
+                style={{ top: `calc(${headerHeightPx}px + ${rowHeightPx}px * 3)` }}
+              >
+                <div className="border-t border-dashed border-amber-300" />
+                <div className="absolute left-1/2 -translate-x-1/2 -top-2 bg-background px-3 text-xs font-semibold text-amber-700">
+                  Descanso
+                </div>
+              </div>
               <table className="w-full border-collapse">
                 <thead>
                   <tr>
-                    <th className="border p-2 bg-muted text-left font-semibold w-28">Hora</th>
+                    <th className="border p-2 bg-muted text-left font-semibold w-28" style={{ height: headerHeightPx }}>Hora</th>
                     {diasNombres.map((dia) => (
-                      <th key={dia} className="border p-2 bg-muted text-left font-semibold min-w-[160px]">
+                      <th key={dia} className="border p-2 bg-muted text-left font-semibold min-w-[160px]" style={{ height: headerHeightPx }}>
                         {dia}
                       </th>
                     ))}
@@ -217,7 +228,7 @@ export default function VistaSemanalHorario({
                 <tbody>
                   {Array.from({ length: lecciones }).map((_, slotInDay) => {
                     return (
-                      <tr key={`row-${slotInDay}`}>
+                      <tr key={`row-${slotInDay}`} style={{ height: rowHeightPx }}>
                         {/* etiqueta de hora (fila) */}
                         <td className="border p-2 font-medium bg-muted/50 text-sm">{horaLabels[slotInDay] ?? `Slot ${slotInDay + 1}`}</td>
 
