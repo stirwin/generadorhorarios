@@ -11,6 +11,7 @@ export type LessonItem = {
 
 export type TimetableCell = {
   cargaId: string;
+  lessonId?: string;
   asignaturaId: string;
   asignaturaNombre?: string;
   docenteId?: string | null;
