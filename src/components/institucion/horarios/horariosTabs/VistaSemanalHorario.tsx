@@ -102,8 +102,11 @@ export default function VistaSemanalHorario({
 
   // Nombres de dias (slice por dias)
   const diasNombres = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"].slice(0, dias);
+  const breakAfterIndex = 2;
   const rowHeightPx = 64;
   const headerHeightPx = 40;
+  const topSlotCount = breakAfterIndex + 1;
+  const bottomSlotStart = breakAfterIndex + 1;
 
   // helpers para rowSpan:
   // Es inicio de bloque si la celda existe y la anterior en la misma columna NO corresponde a la misma lessonId
@@ -123,17 +126,51 @@ export default function VistaSemanalHorario({
     return key === prevKey;
   }
 
-  // clamp rowSpan to remaining rows in the column
-  function getRowSpan(slotIdx: number) {
+  function getCellKey(cell: TimetableCell | null | undefined) {
+    if (!cell) return null;
+    return cell.lessonId ?? `${cell.asignaturaNombre ?? cell.asignaturaId}::${cell.docenteNombre ?? cell.docenteId}`;
+  }
+
+  function getLessonBounds(slotIdx: number) {
     const cell = matrix[slotIdx];
-    if (!cell) return 1;
-    const dur = Math.max(1, Math.floor(cell.duracion ?? 1));
+    if (!cell) return null;
+    const key = getCellKey(cell);
+    if (!key) return null;
     const day = Math.floor(slotIdx / lecciones);
     const dayStart = day * lecciones;
     const dayEndExclusive = dayStart + lecciones;
-    // maximum rows available from slotIdx to dayEndExclusive
-    const maxPossible = dayEndExclusive - slotIdx;
-    return Math.min(dur, maxPossible);
+    let start = slotIdx;
+    let end = slotIdx;
+    for (let i = slotIdx - 1; i >= dayStart; i--) {
+      const prevKey = getCellKey(matrix[i]);
+      if (prevKey !== key) break;
+      start = i;
+    }
+    for (let i = slotIdx + 1; i < dayEndExclusive; i++) {
+      const nextKey = getCellKey(matrix[i]);
+      if (nextKey !== key) break;
+      end = i;
+    }
+    return { start, end, dayStart, dayEndExclusive };
+  }
+
+  // rowSpan dentro de un segmento (top/bottom) sin cruzar el descanso
+  function getRowSpanWithin(slotIdx: number, segmentEndExclusive: number) {
+    const cell = matrix[slotIdx];
+    if (!cell) return 1;
+    const key = getCellKey(cell);
+    if (!key) return 1;
+    const day = Math.floor(slotIdx / lecciones);
+    const dayStart = day * lecciones;
+    const dayEndExclusive = dayStart + lecciones;
+    const maxPossible = Math.min(segmentEndExclusive, dayEndExclusive) - slotIdx;
+    let span = 1;
+    for (let i = 1; i < maxPossible; i++) {
+      const nextKey = getCellKey(matrix[slotIdx + i]);
+      if (nextKey !== key) break;
+      span++;
+    }
+    return span;
   }
 
   // obtener nombre de clase por id
@@ -203,16 +240,7 @@ export default function VistaSemanalHorario({
           </CardHeader>
 
           <CardContent>
-            <div className="relative overflow-x-auto">
-              <div
-                className="pointer-events-none absolute left-0 right-0"
-                style={{ top: `calc(${headerHeightPx}px + ${rowHeightPx}px * 3)` }}
-              >
-                <div className="border-t border-dashed border-amber-300" />
-                <div className="absolute left-1/2 -translate-x-1/2 -top-2 bg-background px-3 text-xs font-semibold text-amber-700">
-                  Descanso
-                </div>
-              </div>
+            <div className="overflow-x-auto">
               <table className="w-full border-collapse">
                 <thead>
                   <tr>
@@ -226,14 +254,14 @@ export default function VistaSemanalHorario({
                 </thead>
 
                 <tbody>
-                  {Array.from({ length: lecciones }).map((_, slotInDay) => {
+                  {Array.from({ length: topSlotCount }).map((_, slotInDay) => {
                     return (
                       <tr key={`row-${slotInDay}`} style={{ height: rowHeightPx }}>
                         {/* etiqueta de hora (fila) */}
                         <td className="border p-2 font-medium bg-muted/50 text-sm">{horaLabels[slotInDay] ?? `Slot ${slotInDay + 1}`}</td>
 
-                        {Array.from({ length: dias }).map((_, day) => {
-                          const slotIdx = day * lecciones + slotInDay;
+                        {Array.from({ length: dias }).map((_, dayIdx) => {
+                          const slotIdx = dayIdx * lecciones + slotInDay;
                           const cell = matrix[slotIdx];
 
                           // Si es continuación (parte de un rowSpan superior), no renderizamos nada
@@ -253,7 +281,12 @@ export default function VistaSemanalHorario({
                           }
 
                           // si existe, calcular rowSpan
-                          const rowSpan = getRowSpan(slotIdx);
+                          const dayCalc = Math.floor(slotIdx / lecciones);
+                          const dayStart = dayCalc * lecciones;
+                          const slotInDayCalc = slotIdx - dayStart;
+                          const rowSpan = getRowSpanWithin(slotIdx, dayStart + topSlotCount);
+                          const bounds = getLessonBounds(slotIdx);
+                          const crossesBreak = bounds ? (bounds.start <= dayStart + breakAfterIndex && bounds.end > dayStart + breakAfterIndex) : false;
 
                           // clamping y presentacion
                           const asignatura = cell.asignaturaNombre ?? cell.asignaturaId ?? "Asignatura";
@@ -273,10 +306,94 @@ export default function VistaSemanalHorario({
                           })();
 
                           return (
-                            <td key={`c-${slotIdx}`} rowSpan={rowSpan} className="border p-2 align-top">
+                            <td key={`c-${slotIdx}`} rowSpan={Math.min(rowSpan, topSlotCount - slotInDay)} className="border p-2 align-top">
                               <div className={`${colorClass} text-white p-2 rounded-lg cursor-pointer`}>
                                 <div className="font-semibold text-sm truncate">{asignatura}</div>
                                 <div className="text-xs opacity-90 mt-1 truncate">{docente}</div>
+                                {crossesBreak && (
+                                  <div className="mt-1 inline-flex rounded bg-white/20 px-2 py-0.5 text-[10px] font-semibold text-white">
+                                    Continúa después del descanso
+                                  </div>
+                                )}
+                                <div className="text-[11px] opacity-80 mt-1">
+                                  {dur > 1 ? `${dur} slots` : "1 slot"}
+                                </div>
+                              </div>
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+
+              <div className="my-3">
+                <div className="relative">
+                  <div className="border-t border-dashed border-amber-300" />
+                  <div className="absolute left-1/2 -translate-x-1/2 -top-2 bg-background px-3 text-xs font-semibold text-amber-700">
+                    Descanso
+                  </div>
+                </div>
+              </div>
+
+              <table className="w-full border-collapse">
+                <tbody>
+                  {Array.from({ length: lecciones - bottomSlotStart }).map((_, offset) => {
+                    const slotInDay = bottomSlotStart + offset;
+                    return (
+                      <tr key={`row-b-${slotInDay}`} style={{ height: rowHeightPx }}>
+                        <td className="border p-2 font-medium bg-muted/50 text-sm">{horaLabels[slotInDay] ?? `Slot ${slotInDay + 1}`}</td>
+                        {Array.from({ length: dias }).map((_, dayIdx) => {
+                          const slotIdx = dayIdx * lecciones + slotInDay;
+                          const cell = matrix[slotIdx];
+
+                          if (cell && slotInDay !== bottomSlotStart && isContinuation(slotIdx)) {
+                            return null;
+                          }
+
+                          if (!cell) {
+                            return (
+                              <td key={`c-b-${slotIdx}`} className="border p-2 align-top">
+                                <div className="h-16 flex items-center justify-center text-muted-foreground text-sm cursor-pointer hover:bg-muted/10 rounded">
+                                  <span className="select-none">+</span>
+                                </div>
+                              </td>
+                            );
+                          }
+
+                          const dayCalc = Math.floor(slotIdx / lecciones);
+                          const dayStart = dayCalc * lecciones;
+                          const slotInDayCalc = slotIdx - dayStart;
+                          const rowSpan = getRowSpanWithin(slotIdx, dayStart + lecciones);
+                          const bounds = getLessonBounds(slotIdx);
+                          const crossesBreak = bounds ? (bounds.start <= dayStart + breakAfterIndex && bounds.end > dayStart + breakAfterIndex) : false;
+
+                          const asignatura = cell.asignaturaNombre ?? cell.asignaturaId ?? "Asignatura";
+                          const docente = cell.docenteNombre ?? cell.docenteId ?? "-";
+                          const dur = Math.max(1, cell.duracion ?? 1);
+
+                          const colorClass = (() => {
+                            const seed = (cell.lessonId ?? asignatura).toString();
+                            const colors = [
+                              "bg-blue-600", "bg-green-600", "bg-purple-600",
+                              "bg-orange-500", "bg-rose-600", "bg-sky-600", "bg-amber-600",
+                            ];
+                            let h = 0;
+                            for (let i = 0; i < seed.length; i++) h = (h << 5) - h + seed.charCodeAt(i);
+                            return colors[Math.abs(h) % colors.length];
+                          })();
+
+                          return (
+                            <td key={`c-b-${slotIdx}`} rowSpan={Math.min(rowSpan, lecciones - slotInDay)} className="border p-2 align-top">
+                              <div className={`${colorClass} text-white p-2 rounded-lg cursor-pointer`}>
+                                <div className="font-semibold text-sm truncate">{asignatura}</div>
+                                <div className="text-xs opacity-90 mt-1 truncate">{docente}</div>
+                                {crossesBreak && (
+                                  <div className="mt-1 inline-flex rounded bg-white/20 px-2 py-0.5 text-[10px] font-semibold text-white">
+                                    Continúa después del descanso
+                                  </div>
+                                )}
                                 <div className="text-[11px] opacity-80 mt-1">
                                   {dur > 1 ? `${dur} slots` : "1 slot"}
                                 </div>
