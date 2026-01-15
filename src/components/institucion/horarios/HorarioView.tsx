@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import VistaGeneralHorario from "./horariosTabs/GeneralHorario";
 import VistaSemanalHorario from "./horariosTabs/VistaSemanalHorario";
 import VistaSemanalDocente from "./horariosTabs/VistaSemanalDocente";
+import VistaReunionesArea from "./horariosTabs/VistaReunionesArea";
 import { Institucion } from "@/types/institucion";
 import type { TimetableCell } from "@/lib/timetabler"; // <-- usar el tipo canonical
 
@@ -302,6 +303,7 @@ export default function HorariosView({
               <TabsTrigger value="vista-general">Vista general</TabsTrigger>
               <TabsTrigger value="vista-semanal">Vista semanal</TabsTrigger>
               <TabsTrigger value="vista-docente">Por docente</TabsTrigger>
+              <TabsTrigger value="vista-reuniones">Reuniones de área</TabsTrigger>
             </TabsList>
           </div>
           <Badge className="text-sm">Clases: {claseIds.length}</Badge>
@@ -334,6 +336,13 @@ export default function HorariosView({
             institucion={institucion}
             timetableByClase={timetableByClase ?? {}}
             onExport={() => handleExportAllTeachers()}
+          />
+        </TabsContent>
+
+        <TabsContent value="vista-reuniones">
+          <VistaReunionesArea
+            institucion={institucion}
+            timetablerMeta={timetablerMeta}
           />
         </TabsContent>
       </Tabs>

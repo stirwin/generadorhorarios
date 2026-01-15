@@ -28,8 +28,11 @@ export async function POST(req: Request) {
     });
     const teacherBlockedSlots: Record<string, boolean[]> = {};
     for (const d of docentes) {
+      teacherBlockedSlots[d.id] = Array(totalSlots).fill(false);
+    }
+    for (const d of docentes) {
       if (!d.restricciones || d.restricciones.length === 0) continue;
-      const arr = Array(totalSlots).fill(false);
+      const arr = teacherBlockedSlots[d.id] ?? Array(totalSlots).fill(false);
       for (const r of d.restricciones) {
         if (r.tipo !== "bloqueo") continue;
         if (r.dia < 0 || r.dia >= days) continue;
@@ -89,6 +92,7 @@ export async function POST(req: Request) {
         });
       }
     }
+    const lessonById = new Map<string, LessonItem>(lessons.map((l) => [l.id, l]));
 
     // Restriccion: director de grupo siempre lunes primera hora con su clase (si está activada)
     const forcedStarts: Record<string, number> = {};
@@ -127,6 +131,126 @@ export async function POST(req: Request) {
         }
         forcedStarts[chosen.id] = mondayStart;
         forcedLabels[chosen.id] = "Dir. grupo (Lun 1ra)";
+      }
+    }
+
+    // -------------------------
+    // Reuniones de area (slot semanal comun para docentes del grupo)
+    // -------------------------
+    function normalizeSubjectName(name?: string | null) {
+      return (name || "")
+        .toString()
+        .normalize("NFD")
+        .replace(/\p{Diacritic}/gu, "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, "");
+    }
+
+    const areaGroups = [
+      { id: "lenguaje", label: "Lenguaje/Lectora", subjects: ["LENGUAJE", "LECTORA"] },
+      { id: "ingles", label: "Ingles", subjects: ["INGLES"] },
+      { id: "mates", label: "Matematicas/Estadisticas/Geometria/Fisica", subjects: ["MATEMATICAS", "ESTADISTICAS", "GEOMETRIA", "FISICA"] },
+      { id: "bioquim", label: "Biologia/Quim-Fisi", subjects: ["BIOLOGIA", "QUIM/FISI"] },
+      { id: "humanidades", label: "Sociales/Catedra/Econ y Poli/Filosofia/Informatica/Ed.Fisica/Religion/Etica", subjects: ["SOCIALES", "CATEDRA", "ECON Y POLI", "FILOSOFIA", "INFORMATICA", "EDU.FISICA", "RELIGION", "ETICA"] },
+    ];
+    const groupSubjectSets = new Map<string, Set<string>>();
+    for (const g of areaGroups) {
+      groupSubjectSets.set(g.id, new Set(g.subjects.map((s) => normalizeSubjectName(s))));
+    }
+
+    const groupTeachers = new Map<string, Set<string>>();
+    for (const c of cargas) {
+      if (!c.docenteId) continue;
+      const subjectKey = normalizeSubjectName(c.asignatura?.nombre ?? "");
+      for (const g of areaGroups) {
+        const set = groupSubjectSets.get(g.id);
+        if (set?.has(subjectKey)) {
+          if (!groupTeachers.has(g.id)) groupTeachers.set(g.id, new Set());
+          groupTeachers.get(g.id)!.add(c.docenteId);
+        }
+      }
+    }
+
+    const teacherUnavailable: Record<string, boolean[]> = {};
+    for (const d of docentes) {
+      teacherUnavailable[d.id] = [...(teacherBlockedSlots[d.id] ?? Array(totalSlots).fill(false))];
+    }
+    for (const [lessonId, startIdx] of Object.entries(forcedStarts)) {
+      const lesson = lessonById.get(lessonId);
+      if (!lesson || !lesson.docenteId) continue;
+      const arr = teacherUnavailable[lesson.docenteId] ?? Array(totalSlots).fill(false);
+      for (let p = 0; p < lesson.duracion; p++) {
+        const idx = startIdx + p;
+        if (idx >= 0 && idx < totalSlots) arr[idx] = true;
+      }
+      teacherUnavailable[lesson.docenteId] = arr;
+    }
+
+    const meetingAssignments: Array<{ groupId: string; label: string; slot: number; teachers: string[] }> = [];
+    const meetingConflicts: Array<{ groupId: string; label: string; reason: string }> = [];
+
+    const groupsToSchedule = areaGroups
+      .map((g) => ({ ...g, teachers: Array.from(groupTeachers.get(g.id) ?? []) }))
+      .filter((g) => g.teachers.length > 0);
+
+    const meetingBlocked: Record<string, boolean[]> = {};
+    for (const g of groupsToSchedule) {
+      for (const tid of g.teachers) {
+        if (!meetingBlocked[tid]) meetingBlocked[tid] = Array(totalSlots).fill(false);
+      }
+    }
+
+    function groupCandidates(g: { teachers: string[] }) {
+      const candidates: number[] = [];
+      for (let idx = 0; idx < totalSlots; idx++) {
+        let ok = true;
+        for (const tid of g.teachers) {
+          if (teacherUnavailable[tid]?.[idx]) { ok = false; break; }
+          if (meetingBlocked[tid]?.[idx]) { ok = false; break; }
+        }
+        if (ok) candidates.push(idx);
+      }
+      return candidates;
+    }
+
+    function scheduleMeetings(groups: typeof groupsToSchedule, assigned: Array<{ groupId: string; label: string; slot: number; teachers: string[] }>): boolean {
+      if (groups.length === 0) return true;
+      const withDomains = groups
+        .map((g) => ({ g, candidates: groupCandidates(g) }))
+        .sort((a, b) => a.candidates.length - b.candidates.length);
+
+      const { g, candidates } = withDomains[0];
+      if (candidates.length === 0) return false;
+
+      for (const slot of candidates) {
+        for (const tid of g.teachers) {
+          meetingBlocked[tid][slot] = true;
+        }
+        assigned.push({ groupId: g.id, label: g.label, slot, teachers: g.teachers });
+        const remaining = groups.filter((x) => x.id !== g.id);
+        if (scheduleMeetings(remaining, assigned)) return true;
+        assigned.pop();
+        for (const tid of g.teachers) {
+          meetingBlocked[tid][slot] = false;
+        }
+      }
+      return false;
+    }
+
+    if (groupsToSchedule.length > 0) {
+      const ok = scheduleMeetings(groupsToSchedule, meetingAssignments);
+      if (!ok) {
+        for (const g of groupsToSchedule) {
+          meetingConflicts.push({ groupId: g.id, label: g.label, reason: "sin slot comun disponible" });
+        }
+      } else {
+        for (const m of meetingAssignments) {
+          for (const tid of m.teachers) {
+            const arr = teacherBlockedSlots[tid] ?? Array(totalSlots).fill(false);
+            arr[m.slot] = true;
+            teacherBlockedSlots[tid] = arr;
+          }
+        }
       }
     }
 
@@ -248,6 +372,10 @@ export async function POST(req: Request) {
       forcedDirector: {
         forcedCount: Object.keys(forcedStarts).length,
         conflicts: forcedConflicts,
+      },
+      areaMeetings: {
+        assigned: meetingAssignments,
+        conflicts: meetingConflicts,
       },
     };
 
