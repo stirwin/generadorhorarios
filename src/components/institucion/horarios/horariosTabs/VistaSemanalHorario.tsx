@@ -78,26 +78,9 @@ export default function VistaSemanalHorario({
     return Array.from(map.values());
   }, [selectedClassId, timetableByClase]);
 
-  // etiquetas de hora: usa periodos si están, si no genera "Slot 1", "Slot 2" o calcula horarios simples
+  // etiquetas de hora: usar numeración 1..N según la cantidad de lecciones
   const horaLabels = useMemo(() => {
-    const p = institucion.periodos ?? [];
-    if (p.length >= lecciones) {
-      return p.slice(0, lecciones).map((x, idx) => {
-        const inicio = x.hora_inicio ?? (x as any).horaInicio;
-        const fin = x.hora_fin ?? (x as any).horaFin;
-        if (inicio && fin) return `${inicio} - ${fin}`;
-        if (inicio) return inicio;
-        if (x.abreviatura) return x.abreviatura;
-        return `Slot ${x.indice ?? idx + 1}`;
-      });
-    }
-    // fallback: generar labels numéricas a partir de un inicio 06:00 + 60min por slot
-    const baseHour = 6;
-    return Array.from({ length: lecciones }, (_, i) => {
-      const hour = baseHour + i;
-      const h = String(hour).padStart(2, "0");
-      return `${h}:00`;
-    });
+    return Array.from({ length: lecciones }, (_, i) => String(i + 1));
   }, [institucion.periodos, lecciones]);
 
   // Nombres de dias (slice por dias)

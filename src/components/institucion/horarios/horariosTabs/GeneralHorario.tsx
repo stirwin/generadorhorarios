@@ -399,20 +399,8 @@ export default function VistaGeneralHorario({
   }
 
   const horaLabels: string[] = useMemo(() => {
-    const p = (institucion as any).periodos ?? [];
-    if (Array.isArray(p) && p.length >= lecciones) {
-      return p.slice(0, lecciones).map((x: any, idx: number) => {
-        const inicio = x.hora_inicio ?? x.horaInicio;
-        const fin = x.hora_fin ?? x.horaFin;
-        if (inicio && fin) return `${inicio} - ${fin}`;
-        if (inicio) return inicio;
-        if (x.abreviatura) return x.abreviatura;
-        return `Slot ${x.indice ?? idx + 1}`;
-      });
-    }
-    const baseHour = 6;
-    return Array.from({ length: lecciones }, (_, i) => `${String(baseHour + i).padStart(2,"0")}:00`);
-  }, [institucion, lecciones]);
+    return Array.from({ length: lecciones }, (_, i) => String(i + 1));
+  }, [lecciones]);
 
   return (
     <div className="p-4">

@@ -110,23 +110,8 @@ export default function VistaSemanalDocente({
 
   // Hora labels
   const horaLabels = useMemo(() => {
-    const p = institucion.periodos ?? [];
-    if (p.length >= lecciones) {
-      return p.slice(0, lecciones).map((x, idx) => {
-        const inicio = x.hora_inicio ?? (x as any).horaInicio;
-        const fin = x.hora_fin ?? (x as any).horaFin;
-        if (inicio && fin) return `${inicio} - ${fin}`;
-        if (inicio) return inicio;
-        if (x.abreviatura) return x.abreviatura;
-        return `Slot ${x.indice ?? idx + 1}`;
-      });
-    }
-    const baseHour = 6;
-    return Array.from({ length: lecciones }, (_, i) => {
-      const h = String(baseHour + i).padStart(2, "0");
-      return `${h}:00`;
-    });
-  }, [institucion.periodos, lecciones]);
+    return Array.from({ length: lecciones }, (_, i) => String(i + 1));
+  }, [lecciones]);
 
   const diasNombres = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"].slice(0, dias);
 
