@@ -401,6 +401,11 @@ export default function VistaGeneralHorario({
   const horaLabels: string[] = useMemo(() => {
     return Array.from({ length: lecciones }, (_, i) => String(i + 1));
   }, [lecciones]);
+  const breakAfterIndex = 2;
+  const breakPercent = useMemo(() => {
+    if (lecciones <= 0) return 50;
+    return ((breakAfterIndex + 1) / lecciones) * 100;
+  }, [breakAfterIndex, lecciones]);
 
   return (
     <div className="p-4">
@@ -517,12 +522,26 @@ export default function VistaGeneralHorario({
               <th />
               {diasNombres.map((d, i) => (
                 <th key={`sub-${i}`} className="p-0 border">
-                  <div className="grid" style={{ gridTemplateColumns: `repeat(${lecciones}, minmax(96px,1fr))`, gap: "6px" }}>
-                    {Array.from({ length: lecciones }).map((_, j) => (
-                      <div key={j} className="text-xs p-2 border text-center bg-muted/10">
-                        {horaLabels[j] ?? j + 1}
+                  <div className="relative">
+                    <div className="grid" style={{ gridTemplateColumns: `repeat(${lecciones}, minmax(96px,1fr))`, gap: "6px" }}>
+                      {Array.from({ length: lecciones }).map((_, j) => (
+                        <div key={j} className="text-xs p-2 border text-center bg-muted/10">
+                          {horaLabels[j] ?? j + 1}
+                        </div>
+                      ))}
+                    </div>
+                    <div
+                      className="pointer-events-none absolute inset-y-0"
+                      style={{ left: `${breakPercent}%` }}
+                    >
+                      <div className="h-full w-px bg-amber-500/70" />
+                      <div
+                        className="absolute top-1/2 left-0 -translate-y-1/2 -translate-x-1/2 text-[10px] uppercase tracking-wide text-amber-800 bg-background/80 px-1 rounded"
+                        style={{ transform: "translate(-50%, -50%) rotate(-90deg)" }}
+                      >
+                        Descanso
                       </div>
-                    ))}
+                    </div>
                   </div>
                 </th>
               ))}
@@ -609,8 +628,16 @@ export default function VistaGeneralHorario({
 
                     return (
                       <td key={`${claseId}-d${day}`} className="p-2 align-top">
-                        <div className="grid items-start" style={{ gridTemplateColumns: `repeat(${lecciones}, minmax(96px,1fr))`, gap: "6px", alignItems: "start" }}>
-                          {items}
+                        <div className="relative">
+                          <div className="grid items-start" style={{ gridTemplateColumns: `repeat(${lecciones}, minmax(96px,1fr))`, gap: "6px", alignItems: "start" }}>
+                            {items}
+                          </div>
+                          <div
+                            className="pointer-events-none absolute inset-y-0"
+                            style={{ left: `${breakPercent}%` }}
+                          >
+                            <div className="h-full w-px bg-amber-500/60" />
+                          </div>
                         </div>
                       </td>
                     );
