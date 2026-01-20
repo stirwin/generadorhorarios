@@ -103,19 +103,7 @@ export default function HorariosView({
     const dias = institucion.dias_por_semana ?? (institucion as any).diasPorSemana ?? 5;
     const lecciones = institucion.lecciones_por_dia ?? (institucion as any).leccionesPorDia ?? 6;
     const diasNombres = ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"].slice(0, dias);
-    const periodos = (institucion as any).periodos ?? [];
-    const horaLabels = Array.from({ length: lecciones }, (_, i) => {
-      if (Array.isArray(periodos) && periodos[i]) {
-        const p = periodos[i];
-        const inicio = p.hora_inicio ?? p.horaInicio;
-        const fin = p.hora_fin ?? p.horaFin;
-        if (inicio && fin) return `${inicio} - ${fin}`;
-        if (inicio) return inicio;
-        if (p.abreviatura) return p.abreviatura;
-      }
-      const base = 6 + i;
-      return `${String(base).padStart(2,"0")}:00`;
-    });
+    const horaLabels = Array.from({ length: lecciones }, (_, i) => String(i + 1));
 
     const table = timetableByClase ?? {};
     const classList = derivedClasses.length > 0
@@ -130,13 +118,14 @@ export default function HorariosView({
         th, td { border: 1px solid #ccc; padding: 6px; font-size: 12px; }
         th { background: #f5f5f5; }
         .slot { min-height: 32px; }
+        .break-row { text-align: center; font-weight: bold; background: #fff3cd; color: #8a6d3b; letter-spacing: 0.08em; font-size: 11px; }
       </style>
     `;
 
     const content = classList.map((clase) => {
       const arr = table[clase.id] ?? [];
       const cells = Array.from({ length: dias * lecciones }, (_, i) => arr[i] ?? null);
-      const rows = horaLabels.map((label, slotInDay) => {
+      const rows = horaLabels.flatMap((label, slotInDay) => {
         const cellsHtml = diasNombres.map((_, day) => {
           const idx = day * lecciones + slotInDay;
           const cell = cells[idx] as TimetableCell | null;
@@ -145,7 +134,12 @@ export default function HorariosView({
           const docente = cell.docenteNombre ?? cell.docenteId ?? "";
           return `<td class="slot"><div><strong>${asignatura}</strong><br/><span>${docente}</span></div></td>`;
         }).join("");
-        return `<tr><td><strong>${label}</strong></td>${cellsHtml}</tr>`;
+        const row = `<tr><td><strong>${label}</strong></td>${cellsHtml}</tr>`;
+        if (slotInDay === 2) {
+          const descansoRow = `<tr><td colspan="${diasNombres.length + 1}" class="break-row">DESCANSO</td></tr>`;
+          return [row, descansoRow];
+        }
+        return [row];
       }).join("");
 
       const headerCols = diasNombres.map((d) => `<th>${d}</th>`).join("");
@@ -185,19 +179,7 @@ export default function HorariosView({
     const dias = institucion.dias_por_semana ?? (institucion as any).diasPorSemana ?? 5;
     const lecciones = institucion.lecciones_por_dia ?? (institucion as any).leccionesPorDia ?? 6;
     const diasNombres = ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"].slice(0, dias);
-    const periodos = (institucion as any).periodos ?? [];
-    const horaLabels = Array.from({ length: lecciones }, (_, i) => {
-      if (Array.isArray(periodos) && periodos[i]) {
-        const p = periodos[i];
-        const inicio = p.hora_inicio ?? p.horaInicio;
-        const fin = p.hora_fin ?? p.horaFin;
-        if (inicio && fin) return `${inicio} - ${fin}`;
-        if (inicio) return inicio;
-        if (p.abreviatura) return p.abreviatura;
-      }
-      const base = 6 + i;
-      return `${String(base).padStart(2,"0")}:00`;
-    });
+    const horaLabels = Array.from({ length: lecciones }, (_, i) => String(i + 1));
 
     const table = timetableByClase ?? {};
     const teacherMap = new Map<string, string>(); // id -> nombre
@@ -225,6 +207,7 @@ export default function HorariosView({
         th, td { border: 1px solid #ccc; padding: 6px; font-size: 12px; }
         th { background: #f5f5f5; }
         .slot { min-height: 32px; }
+        .break-row { text-align: center; font-weight: bold; background: #fff3cd; color: #8a6d3b; letter-spacing: 0.08em; font-size: 11px; }
       </style>
     `;
 
@@ -248,7 +231,7 @@ export default function HorariosView({
         });
       }
 
-      const rows = horaLabels.map((label, slotInDay) => {
+      const rows = horaLabels.flatMap((label, slotInDay) => {
         const cellsHtml = diasNombres.map((_, day) => {
           const idx = day * lecciones + slotInDay;
           const cell = matrix[idx];
@@ -257,7 +240,12 @@ export default function HorariosView({
           const clase = cell.claseNombre ?? cell.claseId ?? "";
           return `<td class="slot"><div><strong>${asignatura}</strong><br/><span>${clase}</span></div></td>`;
         }).join("");
-        return `<tr><td><strong>${label}</strong></td>${cellsHtml}</tr>`;
+        const row = `<tr><td><strong>${label}</strong></td>${cellsHtml}</tr>`;
+        if (slotInDay === 2) {
+          const descansoRow = `<tr><td colspan="${diasNombres.length + 1}" class="break-row">DESCANSO</td></tr>`;
+          return [row, descansoRow];
+        }
+        return [row];
       }).join("");
 
       const headerCols = diasNombres.map((d) => `<th>${d}</th>`).join("");

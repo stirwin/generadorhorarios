@@ -93,9 +93,9 @@ export async function GET(req: Request) {
     return NextResponse.json({
       timetable: timetableByClase,
       horarioId: horario.id,
-      stats: {
-        assignedSlots,
-      },
+      areaMeetings: (horario as any).areaMeetingsJson ?? null,
+      createdAt: horario.createdAt,
+      stats: (horario as any).statsJson ?? { assignedSlots },
     }, { status: 200 });
   } catch (err: any) {
     console.error("get latest timetable error:", err);

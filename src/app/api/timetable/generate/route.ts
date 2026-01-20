@@ -147,11 +147,12 @@ export async function POST(req: Request) {
     }
 
     const areaGroups = [
+      { id: "bioquimfis", label: "Biologia/Quimica/Fisica", subjects: ["BIOLOGIA", "QUIMICA", "QUIM/FISI", "FISICA"] },
       { id: "lenguaje", label: "Lenguaje/Lectora", subjects: ["LENGUAJE", "LECTORA"] },
       { id: "ingles", label: "Ingles", subjects: ["INGLES"] },
-      { id: "mates", label: "Matematicas/Estadisticas/Geometria/Fisica", subjects: ["MATEMATICAS", "ESTADISTICAS", "GEOMETRIA", "FISICA"] },
-      { id: "bioquim", label: "Biologia/Quim-Fisi", subjects: ["BIOLOGIA", "QUIM/FISI"] },
-      { id: "humanidades", label: "Sociales/Catedra/Econ y Poli/Filosofia/Informatica/Ed.Fisica/Religion/Etica", subjects: ["SOCIALES", "CATEDRA", "ECON Y POLI", "FILOSOFIA", "INFORMATICA", "EDU.FISICA", "RELIGION", "ETICA"] },
+      { id: "sociales", label: "Sociales/Catedra", subjects: ["SOCIALES", "CATEDRA"] },
+      { id: "tecnicas", label: "Informatica/Artistica/Ed.Fisica/Etica/Religion", subjects: ["INFORMATICA", "ARTISTICA", "EDU.FISICA", "ETICA", "RELIGION"] },
+      { id: "mates", label: "Geometria/Estadistica/Matematicas", subjects: ["GEOMETRIA", "ESTADISTICAS", "MATEMATICAS"] },
     ];
     const groupSubjectSets = new Map<string, Set<string>>();
     for (const g of areaGroups) {
@@ -171,6 +172,13 @@ export async function POST(req: Request) {
       }
     }
 
+    const teacherRequiredSlots: Record<string, number> = {};
+    for (const c of cargas) {
+      if (!c.docenteId) continue;
+      const slots = (c as any).sesiones_sem * (c as any).duracion_slots;
+      teacherRequiredSlots[c.docenteId] = (teacherRequiredSlots[c.docenteId] ?? 0) + (Number(slots) || 0);
+    }
+
     const teacherUnavailable: Record<string, boolean[]> = {};
     for (const d of docentes) {
       teacherUnavailable[d.id] = [...(teacherBlockedSlots[d.id] ?? Array(totalSlots).fill(false))];
@@ -184,6 +192,11 @@ export async function POST(req: Request) {
         if (idx >= 0 && idx < totalSlots) arr[idx] = true;
       }
       teacherUnavailable[lesson.docenteId] = arr;
+    }
+
+    const teacherUnavailableCount: Record<string, number> = {};
+    for (const [tid, arr] of Object.entries(teacherUnavailable)) {
+      teacherUnavailableCount[tid] = arr.reduce((acc, blocked) => acc + (blocked ? 1 : 0), 0);
     }
 
     const meetingAssignments: Array<{ groupId: string; label: string; slot: number; teachers: string[] }> = [];
@@ -200,18 +213,66 @@ export async function POST(req: Request) {
       }
     }
 
+    function canScheduleMeetingSlot(tid: string, slot: number) {
+      if (teacherUnavailable[tid]?.[slot]) return false;
+      if (meetingBlocked[tid]?.[slot]) return false;
+      const required = teacherRequiredSlots[tid] ?? 0;
+      const unavailable = teacherUnavailableCount[tid] ?? 0;
+      const availableAfter = totalSlots - (unavailable + 1);
+      return required <= availableAfter;
+    }
+
+    function meetingSlotScore(teachers: string[], slot: number) {
+      let minSlack = Number.POSITIVE_INFINITY;
+      let totalSlack = 0;
+      for (const tid of teachers) {
+        const required = teacherRequiredSlots[tid] ?? 0;
+        const unavailable = teacherUnavailableCount[tid] ?? 0;
+        const availableAfter = totalSlots - (unavailable + 1);
+        const slack = availableAfter - required;
+        if (slack < minSlack) minSlack = slack;
+        totalSlack += slack;
+      }
+      return { minSlack, totalSlack };
+    }
+
+    const forbiddenMeetingSlots = new Set<number>();
+    for (let p = 0; p < Math.min(2, slotsPerDay); p++) {
+      forbiddenMeetingSlots.add(p); // lunes, 1ra y 2da hora
+    }
+
+    function slotToDay(slot: number) {
+      return Math.floor(slot / slotsPerDay);
+    }
+
+    function slotInDay(slot: number) {
+      return slot % slotsPerDay;
+    }
+
     function groupCandidates(g: { teachers: string[] }) {
-      const candidates: number[] = [];
+      const candidates: Array<{ slot: number; minSlack: number; totalSlack: number; day: number }> = [];
       for (let idx = 0; idx < totalSlots; idx++) {
+        const day = slotToDay(idx);
+        const inDay = slotInDay(idx);
+        if (day === 0 && forbiddenMeetingSlots.has(inDay)) continue;
         let ok = true;
         for (const tid of g.teachers) {
-          if (teacherUnavailable[tid]?.[idx]) { ok = false; break; }
-          if (meetingBlocked[tid]?.[idx]) { ok = false; break; }
+          if (!canScheduleMeetingSlot(tid, idx)) { ok = false; break; }
         }
-        if (ok) candidates.push(idx);
+        if (ok) {
+          const score = meetingSlotScore(g.teachers, idx);
+          candidates.push({ slot: idx, day, ...score });
+        }
       }
+      candidates.sort((a, b) => {
+        if (b.minSlack !== a.minSlack) return b.minSlack - a.minSlack;
+        if (b.totalSlack !== a.totalSlack) return b.totalSlack - a.totalSlack;
+        return a.slot - b.slot;
+      });
       return candidates;
     }
+
+    const meetingPerDay = Array(days).fill(0);
 
     function scheduleMeetings(groups: typeof groupsToSchedule, assigned: Array<{ groupId: string; label: string; slot: number; teachers: string[] }>): boolean {
       if (groups.length === 0) return true;
@@ -222,14 +283,25 @@ export async function POST(req: Request) {
       const { g, candidates } = withDomains[0];
       if (candidates.length === 0) return false;
 
-      for (const slot of candidates) {
+      const ordered = [...candidates].sort((a, b) => {
+        const dayDiff = meetingPerDay[a.day] - meetingPerDay[b.day];
+        if (dayDiff !== 0) return dayDiff;
+        if (b.minSlack !== a.minSlack) return b.minSlack - a.minSlack;
+        if (b.totalSlack !== a.totalSlack) return b.totalSlack - a.totalSlack;
+        return a.slot - b.slot;
+      });
+
+      for (const cand of ordered) {
+        const slot = cand.slot;
         for (const tid of g.teachers) {
           meetingBlocked[tid][slot] = true;
         }
+        meetingPerDay[cand.day] += 1;
         assigned.push({ groupId: g.id, label: g.label, slot, teachers: g.teachers });
         const remaining = groups.filter((x) => x.id !== g.id);
         if (scheduleMeetings(remaining, assigned)) return true;
         assigned.pop();
+        meetingPerDay[cand.day] -= 1;
         for (const tid of g.teachers) {
           meetingBlocked[tid][slot] = false;
         }
@@ -271,6 +343,14 @@ export async function POST(req: Request) {
       classLoad[c.claseId] = entry;
     }
     const overCapacityClasses = Object.entries(classLoad).filter(([, v]) => v.deficit > 0).map(([k, v]) => ({ claseId: k, ...v }));
+
+    if (overCapacityClasses.length > 0) {
+      return NextResponse.json({
+        error: "La carga académica supera la capacidad de algunas clases.",
+        overCapacityClasses,
+        classLoad,
+      }, { status: 400 });
+    }
 
     // Ejecutar generador: habilita relaxTeacherConstraints si lo pasas en body (opcional)
     const result = generateTimetable(institucionId, cls, lessons, days, slotsPerDay, {

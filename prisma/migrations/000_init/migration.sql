@@ -121,13 +121,13 @@ CREATE TABLE "HorarioSlot" (
 );
 
 -- CreateIndex
-CREATE UNIQUE INDEX "Docente_abreviatura_key" ON "Docente"("abreviatura");
+CREATE UNIQUE INDEX "Docente_institucionId_abreviatura_key" ON "Docente"("institucionId", "abreviatura");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "Clase_abreviatura_key" ON "Clase"("abreviatura");
+CREATE UNIQUE INDEX "Clase_institucionId_abreviatura_key" ON "Clase"("institucionId", "abreviatura");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "Asignatura_abreviatura_key" ON "Asignatura"("abreviatura");
+CREATE UNIQUE INDEX "Asignatura_institucionId_abreviatura_key" ON "Asignatura"("institucionId", "abreviatura");
 
 -- AddForeignKey
 ALTER TABLE "DefinicionPeriodo" ADD CONSTRAINT "DefinicionPeriodo_institucionId_fkey" FOREIGN KEY ("institucionId") REFERENCES "Institucion"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
@@ -179,3 +179,4 @@ ALTER TABLE "HorarioSlot" ADD CONSTRAINT "HorarioSlot_docenteId_fkey" FOREIGN KE
 
 -- AddForeignKey
 ALTER TABLE "HorarioSlot" ADD CONSTRAINT "HorarioSlot_asignaturaId_fkey" FOREIGN KEY ("asignaturaId") REFERENCES "Asignatura"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+

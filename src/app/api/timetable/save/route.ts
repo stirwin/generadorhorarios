@@ -17,6 +17,8 @@ export async function POST(req: Request) {
     const body = await req.json();
     const institucionId = body?.institucionId;
     const timetable = body?.timetable;
+    const areaMeetings = body?.areaMeetings ?? null;
+    const stats = body?.stats ?? null;
 
     if (!institucionId) {
       return NextResponse.json({ error: "institucionId requerido" }, { status: 400 });
@@ -74,6 +76,8 @@ export async function POST(req: Request) {
         data: {
           institucionId,
           nombre: institucion.nombre ?? null,
+          areaMeetingsJson: areaMeetings,
+          statsJson: stats,
         },
       });
       if (slotsToCreate.length > 0) {
@@ -83,7 +87,7 @@ export async function POST(req: Request) {
       return horario;
     });
 
-    return NextResponse.json({ horarioId: saved.id }, { status: 200 });
+    return NextResponse.json({ horarioId: saved.id, createdAt: saved.createdAt }, { status: 200 });
   } catch (err: any) {
     console.error("save timetable error:", err);
     return NextResponse.json({ error: err.message || String(err) }, { status: 500 });

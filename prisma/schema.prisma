@@ -39,7 +39,7 @@ model DefinicionPeriodo {
 model Docente {
   id            String   @id @default(cuid())
   nombre        String
-  abreviatura   String   @unique
+  abreviatura   String
   activo        Boolean  @default(true)
   direccionGrupoId String?
   institucionId String
@@ -48,27 +48,33 @@ model Docente {
   cargas        CargaAcademica[]
   restricciones DocenteRestriccion[]
   horarioSlots  HorarioSlot[]
+
+  @@unique([institucionId, abreviatura])
 }
 
 model Clase {
   id            String   @id @default(cuid())
   nombre        String
-  abreviatura   String   @unique
+  abreviatura   String
   institucionId String
   institucion   Institucion @relation(fields: [institucionId], references: [id])
   cargas        CargaAcademica[]
   directores    Docente[] @relation("DocenteDireccionGrupo")
   horarioSlots  HorarioSlot[]
+
+  @@unique([institucionId, abreviatura])
 }
 
 model Asignatura {
   id            String   @id @default(cuid())
   nombre        String
-  abreviatura   String   @unique
+  abreviatura   String
   institucionId String
   institucion   Institucion @relation(fields: [institucionId], references: [id])
   cargas        CargaAcademica[]
   horarioSlots  HorarioSlot[]
+
+  @@unique([institucionId, abreviatura])
 }
 
 model CargaAcademica {
@@ -111,6 +117,8 @@ model Horario {
   id            String   @id @default(cuid())
   institucionId String
   nombre        String?
+  areaMeetingsJson Json?
+  statsJson     Json?
   createdAt     DateTime @default(now())
   institucion   Institucion @relation(fields: [institucionId], references: [id])
   slots         HorarioSlot[]

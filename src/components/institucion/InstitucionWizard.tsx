@@ -54,6 +54,7 @@ export default function InstitucionWizard() {
   const [loadingTimetable, setLoadingTimetable] = useState(false);
   const [timetableStats, setTimetableStats] = useState<any | null>(null);
   const [horarioId, setHorarioId] = useState<string | null>(null);
+  const [horarioCreatedAt, setHorarioCreatedAt] = useState<string | null>(null);
 
   // NUEVO: metadatos / debug del timetabler (se muestran en la UI)
   const [timetableMeta, setTimetableMeta] = useState<any | null>(null);
@@ -118,6 +119,12 @@ export default function InstitucionWizard() {
         setTimetable(returnedTimetable);
         setTimetableStats(data?.stats ?? null);
         setHorarioId(typeof data?.horarioId === "string" ? data.horarioId : null);
+        setHorarioCreatedAt(typeof data?.createdAt === "string" ? data.createdAt : null);
+        if (data?.areaMeetings) {
+          setTimetableMeta({ areaMeetings: data.areaMeetings });
+        } else {
+          setTimetableMeta(null);
+        }
       }
     } catch (err) {
       console.warn("fetchLatestHorario error:", err);
@@ -277,6 +284,20 @@ export default function InstitucionWizard() {
             message = String(data).slice(0, 1000);
           }
         }
+        if (Array.isArray((data as any)?.overCapacityClasses)) {
+          const classMap = new Map<string, string>();
+          (institucionSeleccionada?.clases ?? []).forEach((c: any) => {
+            classMap.set(c.id, c.nombre ?? c.abreviatura ?? c.id);
+          });
+          const details = (data as any).overCapacityClasses
+            .slice(0, 10)
+            .map((c: any) => {
+              const name = classMap.get(c.claseId) ?? c.claseId;
+              return `${name} (deficit ${c.deficit})`;
+            })
+            .join(", ");
+          message = `Carga académica supera la capacidad. ${details}`;
+        }
         throw new Error(message);
       }
 
@@ -291,6 +312,7 @@ export default function InstitucionWizard() {
       const unplacedFromServer = Array.isArray(data?.unplaced) ? data.unplaced : (Array.isArray(data?.debug?.unplaced) ? data.debug.unplaced : []);
       setTimetableStats(data?.stats ? { ...data.stats, unplacedCount: unplacedFromServer.length } : null);
       setHorarioId(null);
+      setHorarioCreatedAt(null);
 
       // ---------- NUEVO: extraer metadatos / debug ----------
       const metaCandidate = data?.debug
@@ -321,6 +343,7 @@ export default function InstitucionWizard() {
         }
         console.groupEnd();
       }
+      alert("Horario generado correctamente.");
     } catch (err: any) {
       console.error("handleGenerateTimetable error:", err);
       alert("No se pudo generar el horario: " + (err?.message ?? String(err)));
@@ -347,6 +370,8 @@ export default function InstitucionWizard() {
         body: JSON.stringify({
           institucionId: institucionSeleccionada.id,
           timetable,
+          areaMeetings: timetableMeta?.areaMeetings ?? null,
+          stats: timetableStats ?? null,
         }),
       });
 
@@ -359,6 +384,8 @@ export default function InstitucionWizard() {
       }
 
       setHorarioId(typeof data?.horarioId === "string" ? data.horarioId : null);
+      setHorarioCreatedAt(typeof data?.createdAt === "string" ? data.createdAt : null);
+      alert("Horario guardado correctamente.");
     } catch (err: any) {
       console.error("handleSaveTimetable error:", err);
       alert("No se pudo guardar el horario: " + (err?.message ?? String(err)));
@@ -442,6 +469,7 @@ export default function InstitucionWizard() {
                       setTimetableStats(null);
                       setTimetableMeta(null);
                       setHorarioId(null);
+                      setHorarioCreatedAt(null);
                     }}
                   >
                     <div className="flex justify-between items-center">
@@ -525,9 +553,14 @@ export default function InstitucionWizard() {
                       Guardar horario
                     </Button>
                     <span className="text-[11px] text-muted-foreground">
-                      {horarioId ? `Guardado: ${horarioId}` : "No guardado"}
+                      {horarioId ? "Guardado" : "No guardado"}
                     </span>
                   </div>
+                  {horarioCreatedAt && (
+                    <span className="text-[11px] text-muted-foreground">
+                      {`Último guardado: ${new Date(horarioCreatedAt).toLocaleString("es-CO")}`}
+                    </span>
+                  )}
                 </div>
               </CardContent>
             </Card>

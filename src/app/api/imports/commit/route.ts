@@ -24,7 +24,7 @@ export async function POST(request: Request) {
       const abre = (d.abreviatura || d.abreviatura === "") ? String(d.abreviatura).trim() : "";
       if (!abre) continue;
       await prisma.docente.upsert({
-        where: { abreviatura: abre },
+        where: { institucionId_abreviatura: { institucionId, abreviatura: abre } },
         update: { nombre: d.nombre || "", institucionId },
         create: { nombre: d.nombre || "", abreviatura: abre, institucionId },
       });
@@ -34,7 +34,7 @@ export async function POST(request: Request) {
       const abre = (c.abreviatura || c.abreviatura === "") ? String(c.abreviatura).trim() : "";
       if (!abre) continue;
       await prisma.clase.upsert({
-        where: { abreviatura: abre },
+        where: { institucionId_abreviatura: { institucionId, abreviatura: abre } },
         update: { nombre: c.nombre || "", institucionId },
         create: { nombre: c.nombre || "", abreviatura: abre, institucionId },
       });
@@ -44,7 +44,7 @@ export async function POST(request: Request) {
       const abre = (a.abreviatura || a.abreviatura === "") ? String(a.abreviatura).trim() : "";
       if (!abre) continue;
       await prisma.asignatura.upsert({
-        where: { abreviatura: abre },
+        where: { institucionId_abreviatura: { institucionId, abreviatura: abre } },
         update: { nombre: a.nombre || "", institucionId },
         create: { nombre: a.nombre || "", abreviatura: abre, institucionId },
       });
