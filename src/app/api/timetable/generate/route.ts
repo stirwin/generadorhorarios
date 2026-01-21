@@ -93,7 +93,6 @@ export async function POST(req: Request) {
       }
     }
     const lessonById = new Map<string, LessonItem>(lessons.map((l) => [l.id, l]));
-
     // Restriccion: director de grupo siempre lunes primera hora con su clase (si está activada)
     const forcedStarts: Record<string, number> = {};
     const forcedLabels: Record<string, string> = {};
@@ -113,8 +112,11 @@ export async function POST(req: Request) {
           forcedConflicts.push({ docenteId, claseId, reason: "sin lecciones del docente en su grupo" });
           continue;
         }
-        const sorted = candidates.slice().sort((a, b) => a.duracion - b.duracion);
-        const chosen = sorted[0];
+        const withOneSlot = candidates.filter((c) => c.duracion === 1);
+        const withTwoSlots = candidates.filter((c) => c.duracion >= 2);
+        const chosen = (withOneSlot.length > 0
+          ? withOneSlot[0]
+          : (withTwoSlots.length > 0 ? withTwoSlots[0] : candidates.slice().sort((a, b) => a.duracion - b.duracion)[0]));
         const blocked = teacherBlockedSlots[docenteId];
         const requiredSlots = chosen.duracion;
         let blockedConflict = false;
@@ -130,7 +132,7 @@ export async function POST(req: Request) {
           continue;
         }
         forcedStarts[chosen.id] = mondayStart;
-        forcedLabels[chosen.id] = "Dir. grupo (Lun 1ra)";
+        forcedLabels[chosen.id] = requiredSlots >= 2 ? "Dir. grupo (Lun 1-2)" : "Dir. grupo (Lun 1ra)";
       }
     }
 
@@ -172,33 +174,6 @@ export async function POST(req: Request) {
       }
     }
 
-    const teacherRequiredSlots: Record<string, number> = {};
-    for (const c of cargas) {
-      if (!c.docenteId) continue;
-      const slots = (c as any).sesiones_sem * (c as any).duracion_slots;
-      teacherRequiredSlots[c.docenteId] = (teacherRequiredSlots[c.docenteId] ?? 0) + (Number(slots) || 0);
-    }
-
-    const teacherUnavailable: Record<string, boolean[]> = {};
-    for (const d of docentes) {
-      teacherUnavailable[d.id] = [...(teacherBlockedSlots[d.id] ?? Array(totalSlots).fill(false))];
-    }
-    for (const [lessonId, startIdx] of Object.entries(forcedStarts)) {
-      const lesson = lessonById.get(lessonId);
-      if (!lesson || !lesson.docenteId) continue;
-      const arr = teacherUnavailable[lesson.docenteId] ?? Array(totalSlots).fill(false);
-      for (let p = 0; p < lesson.duracion; p++) {
-        const idx = startIdx + p;
-        if (idx >= 0 && idx < totalSlots) arr[idx] = true;
-      }
-      teacherUnavailable[lesson.docenteId] = arr;
-    }
-
-    const teacherUnavailableCount: Record<string, number> = {};
-    for (const [tid, arr] of Object.entries(teacherUnavailable)) {
-      teacherUnavailableCount[tid] = arr.reduce((acc, blocked) => acc + (blocked ? 1 : 0), 0);
-    }
-
     const meetingAssignments: Array<{ groupId: string; label: string; slot: number; teachers: string[] }> = [];
     const meetingConflicts: Array<{ groupId: string; label: string; reason: string }> = [];
 
@@ -206,124 +181,155 @@ export async function POST(req: Request) {
       .map((g) => ({ ...g, teachers: Array.from(groupTeachers.get(g.id) ?? []) }))
       .filter((g) => g.teachers.length > 0);
 
-    const meetingBlocked: Record<string, boolean[]> = {};
+    const teacherRequiredSlots: Record<string, number> = {};
+    const teacherSubjects: Record<string, Set<string>> = {};
+    for (const c of cargas) {
+      if (!c.docenteId) continue;
+      const slots = (c as any).sesiones_sem * (c as any).duracion_slots;
+      teacherRequiredSlots[c.docenteId] = (teacherRequiredSlots[c.docenteId] ?? 0) + (Number(slots) || 0);
+      if (!teacherSubjects[c.docenteId]) teacherSubjects[c.docenteId] = new Set();
+      teacherSubjects[c.docenteId].add(c.asignatura?.nombre ?? c.asignaturaId);
+    }
+
+    const teacherBlockedCount: Record<string, number> = {};
+    for (const d of docentes) {
+      const arr = teacherBlockedSlots[d.id] ?? Array(totalSlots).fill(false);
+      teacherBlockedCount[d.id] = arr.reduce((acc, blocked) => acc + (blocked ? 1 : 0), 0);
+    }
+
+    const teacherMeetingCount: Record<string, number> = {};
     for (const g of groupsToSchedule) {
       for (const tid of g.teachers) {
-        if (!meetingBlocked[tid]) meetingBlocked[tid] = Array(totalSlots).fill(false);
+        teacherMeetingCount[tid] = (teacherMeetingCount[tid] ?? 0) + 1;
       }
     }
 
-    function canScheduleMeetingSlot(tid: string, slot: number) {
-      if (teacherUnavailable[tid]?.[slot]) return false;
-      if (meetingBlocked[tid]?.[slot]) return false;
-      const required = teacherRequiredSlots[tid] ?? 0;
-      const unavailable = teacherUnavailableCount[tid] ?? 0;
-      const availableAfter = totalSlots - (unavailable + 1);
-      return required <= availableAfter;
+    const teacherForcedSlots: Record<string, number> = {};
+    for (const [lessonId] of Object.entries(forcedStarts)) {
+      const lesson = lessonById.get(lessonId);
+      if (!lesson?.docenteId) continue;
+      teacherForcedSlots[lesson.docenteId] = (teacherForcedSlots[lesson.docenteId] ?? 0) + lesson.duracion;
     }
 
-    function meetingSlotScore(teachers: string[], slot: number) {
-      let minSlack = Number.POSITIVE_INFINITY;
-      let totalSlack = 0;
-      for (const tid of teachers) {
-        const required = teacherRequiredSlots[tid] ?? 0;
-        const unavailable = teacherUnavailableCount[tid] ?? 0;
-        const availableAfter = totalSlots - (unavailable + 1);
-        const slack = availableAfter - required;
-        if (slack < minSlack) minSlack = slack;
-        totalSlack += slack;
-      }
-      return { minSlack, totalSlack };
-    }
+    const teacherConflicts = docentes
+      .map((d) => {
+        const required = teacherRequiredSlots[d.id] ?? 0;
+        const blocked = teacherBlockedCount[d.id] ?? 0;
+        const meetings = teacherMeetingCount[d.id] ?? 0;
+        const forced = teacherForcedSlots[d.id] ?? 0;
+        const available = totalSlots - blocked - meetings - forced;
+        if (required <= available) return null;
+        const subjects = Array.from(teacherSubjects[d.id] ?? []).slice(0, 8);
+        return {
+          docenteId: d.id,
+          docenteNombre: d.nombre ?? d.id,
+          required,
+          available,
+          blocked,
+          meetings,
+          forced,
+          subjects,
+        };
+      })
+      .filter(Boolean);
 
-    const forbiddenMeetingSlots = new Set<number>();
-    for (let p = 0; p < Math.min(2, slotsPerDay); p++) {
-      forbiddenMeetingSlots.add(p); // lunes, 1ra y 2da hora
-    }
-
-    function slotToDay(slot: number) {
-      return Math.floor(slot / slotsPerDay);
-    }
-
-    function slotInDay(slot: number) {
-      return slot % slotsPerDay;
-    }
-
-    function groupCandidates(g: { teachers: string[] }) {
-      const candidates: Array<{ slot: number; minSlack: number; totalSlack: number; day: number }> = [];
-      for (let idx = 0; idx < totalSlots; idx++) {
-        const day = slotToDay(idx);
-        const inDay = slotInDay(idx);
-        if (day === 0 && forbiddenMeetingSlots.has(inDay)) continue;
-        let ok = true;
-        for (const tid of g.teachers) {
-          if (!canScheduleMeetingSlot(tid, idx)) { ok = false; break; }
-        }
-        if (ok) {
-          const score = meetingSlotScore(g.teachers, idx);
-          candidates.push({ slot: idx, day, ...score });
-        }
-      }
-      candidates.sort((a, b) => {
-        if (b.minSlack !== a.minSlack) return b.minSlack - a.minSlack;
-        if (b.totalSlack !== a.totalSlack) return b.totalSlack - a.totalSlack;
-        return a.slot - b.slot;
-      });
-      return candidates;
-    }
-
-    const meetingPerDay = Array(days).fill(0);
-
-    function scheduleMeetings(groups: typeof groupsToSchedule, assigned: Array<{ groupId: string; label: string; slot: number; teachers: string[] }>): boolean {
-      if (groups.length === 0) return true;
-      const withDomains = groups
-        .map((g) => ({ g, candidates: groupCandidates(g) }))
-        .sort((a, b) => a.candidates.length - b.candidates.length);
-
-      const { g, candidates } = withDomains[0];
-      if (candidates.length === 0) return false;
-
-      const ordered = [...candidates].sort((a, b) => {
-        const dayDiff = meetingPerDay[a.day] - meetingPerDay[b.day];
-        if (dayDiff !== 0) return dayDiff;
-        if (b.minSlack !== a.minSlack) return b.minSlack - a.minSlack;
-        if (b.totalSlack !== a.totalSlack) return b.totalSlack - a.totalSlack;
-        return a.slot - b.slot;
-      });
-
-      for (const cand of ordered) {
-        const slot = cand.slot;
-        for (const tid of g.teachers) {
-          meetingBlocked[tid][slot] = true;
-        }
-        meetingPerDay[cand.day] += 1;
-        assigned.push({ groupId: g.id, label: g.label, slot, teachers: g.teachers });
-        const remaining = groups.filter((x) => x.id !== g.id);
-        if (scheduleMeetings(remaining, assigned)) return true;
-        assigned.pop();
-        meetingPerDay[cand.day] -= 1;
-        for (const tid of g.teachers) {
-          meetingBlocked[tid][slot] = false;
-        }
-      }
-      return false;
-    }
-
-    if (groupsToSchedule.length > 0) {
-      const ok = scheduleMeetings(groupsToSchedule, meetingAssignments);
-      if (!ok) {
-        for (const g of groupsToSchedule) {
-          meetingConflicts.push({ groupId: g.id, label: g.label, reason: "sin slot comun disponible" });
-        }
-      } else {
-        for (const m of meetingAssignments) {
-          for (const tid of m.teachers) {
-            const arr = teacherBlockedSlots[tid] ?? Array(totalSlots).fill(false);
-            arr[m.slot] = true;
-            teacherBlockedSlots[tid] = arr;
+    const teacherDayAvailability: Record<string, number> = {};
+    for (const d of docentes) {
+      const arr = teacherBlockedSlots[d.id] ?? Array(totalSlots).fill(false);
+      let availableDays = 0;
+      for (let day = 0; day < days; day++) {
+        let anyFree = false;
+        for (let p = 0; p < slotsPerDay; p++) {
+          const idx = day * slotsPerDay + p;
+          if (!arr[idx]) {
+            anyFree = true;
+            break;
           }
         }
+        if (anyFree) availableDays += 1;
       }
+      teacherDayAvailability[d.id] = availableDays;
+    }
+
+    const subjectDayConflicts: Array<{
+      docenteId: string;
+      docenteNombre: string;
+      asignatura: string;
+      sesiones: number;
+      diasDisponibles: number;
+    }> = [];
+
+    const claseNameById = new Map<string, string>();
+    for (const c of cargas) {
+      if (c.claseId && c.clase?.nombre) claseNameById.set(c.claseId, c.clase.nombre);
+    }
+    const teacherSubjectSessions = new Map<string, number>();
+    for (const c of cargas) {
+      if (!c.docenteId) continue;
+      const key = `${c.docenteId}::${c.claseId}::${c.asignatura?.nombre ?? c.asignaturaId}`;
+      const sesiones = Number((c as any).sesiones_sem ?? 0) || 0;
+      teacherSubjectSessions.set(key, (teacherSubjectSessions.get(key) ?? 0) + sesiones);
+    }
+    for (const [key, sesiones] of teacherSubjectSessions.entries()) {
+      const parts = key.split("::");
+      const docenteId = parts[0];
+      const claseId = parts[1];
+      const asignatura = parts.slice(2).join("::");
+      const diasDisponibles = teacherDayAvailability[docenteId] ?? days;
+      if (sesiones > diasDisponibles) {
+        const docenteNombre = docentes.find((d) => d.id === docenteId)?.nombre ?? docenteId;
+        subjectDayConflicts.push({
+          docenteId,
+          docenteNombre,
+          asignatura,
+          sesiones,
+          diasDisponibles,
+          claseId,
+          claseNombre: claseNameById.get(claseId) ?? claseId,
+        });
+      }
+    }
+
+    if (teacherConflicts.length > 0 || subjectDayConflicts.length > 0) {
+      console.warn("generateTimetable: teacher conflicts", teacherConflicts);
+      console.warn("generateTimetable: subject/day conflicts", subjectDayConflicts);
+      return NextResponse.json({
+        error: "Restricciones imposibles con la disponibilidad docente.",
+        teacherConflicts,
+        subjectDayConflicts,
+      }, { status: 400 });
+    }
+
+    const meetingInfoByLessonId = new Map<string, { groupId: string; label: string; teachers: string[] }>();
+    const meetingLessons: LessonItem[] = [];
+    const meetingDomain: number[] = [];
+    for (let d = 0; d < days; d++) {
+      for (let p = 0; p < slotsPerDay; p++) {
+        if (d === 0 && p < 2) continue; // lunes 1ra y 2da hora
+        meetingDomain.push(d * slotsPerDay + p);
+      }
+    }
+
+    for (const g of groupsToSchedule) {
+      const lessonId = `meeting::${g.id}`;
+      meetingInfoByLessonId.set(lessonId, { groupId: g.id, label: g.label, teachers: g.teachers });
+      meetingLessons.push({
+        id: lessonId,
+        cargaId: `meeting::${g.id}`,
+        claseId: `meeting-${g.id}`,
+        asignaturaId: "AREA_MEETING",
+        docenteId: null,
+        duracion: 1,
+        kind: "meeting",
+        meetingTeachers: g.teachers,
+        meetingGroupId: g.id,
+        meetingLabel: g.label,
+        domain: meetingDomain,
+      });
+    }
+
+    if (meetingLessons.length > 0) {
+      lessons.push(...meetingLessons);
     }
 
     // cargar lista ordenada de clases
@@ -352,15 +358,48 @@ export async function POST(req: Request) {
       }, { status: 400 });
     }
 
+    const meetingMaxPerDay = Math.max(1, Math.ceil(meetingLessons.length / Math.max(1, days)));
+
     // Ejecutar generador: habilita relaxTeacherConstraints si lo pasas en body (opcional)
     const result = generateTimetable(institucionId, cls, lessons, days, slotsPerDay, {
-      maxBacktracks: Number(body?.maxBacktracks) || 1600000,
-      timeLimitMs: Number(body?.timeLimitMs) || 180000,
-      maxRestarts: Number(body?.maxRestarts) || 40,
+      maxBacktracks: Number(body?.maxBacktracks) || 1200000,
+      timeLimitMs: Number(body?.timeLimitMs) || 120000,
+      maxRestarts: Number(body?.maxRestarts) || 30,
+      repairIterations: Number(body?.repairIterations) || 300,
+      repairSampleSize: Number(body?.repairSampleSize) || 6,
       teacherBlockedSlots,
       forcedStarts,
       forcedLabels,
+      meetingMaxPerDay,
+      priorityLessonIds: Array.isArray(body?.priorityLessonIds) ? body.priorityLessonIds : undefined,
+      priorityTeacherIds: Array.isArray(body?.priorityTeacherIds) ? body.priorityTeacherIds : undefined,
     });
+
+    const meetingAssignmentMap = new Map<string, number>();
+    const rawMeetingAssignments = Array.isArray(result.meta?.meetingAssignments) ? result.meta.meetingAssignments : [];
+    for (const m of rawMeetingAssignments) {
+      if (m && typeof m.lessonId === "string" && Number.isFinite(m.slot)) {
+        meetingAssignmentMap.set(m.lessonId, Number(m.slot));
+      }
+    }
+    for (const [lessonId, info] of meetingInfoByLessonId.entries()) {
+      const slot = meetingAssignmentMap.get(lessonId);
+      if (typeof slot === "number") {
+        meetingAssignments.push({ groupId: info.groupId, label: info.label, slot, teachers: info.teachers });
+      } else {
+        meetingConflicts.push({ groupId: info.groupId, label: info.label, reason: "sin slot comun disponible" });
+      }
+    }
+    const meetingLessonIds = new Set(meetingLessons.map((l) => l.id));
+    const unplaced: string[] = Array.isArray(result.unplaced)
+      ? result.unplaced.filter((id: string) => !meetingLessonIds.has(id))
+      : [];
+    const meetingAssignedCount = meetingAssignments.length;
+    const adjustedStats = {
+      ...result.stats,
+      lessonsTotal: Math.max(0, result.stats.lessonsTotal - meetingLessons.length),
+      assigned: Math.max(0, result.stats.assigned - meetingAssignedCount),
+    };
 
     // Map de clases para nombres/abreviaturas
     const claseNameMap = new Map<string, { nombre?: string | null }>();
@@ -386,9 +425,12 @@ export async function POST(req: Request) {
       });
     }
 
-    // Unplaced: lesson ids directamente desde el generador
-    const unplaced: string[] = Array.isArray(result.unplaced) ? result.unplaced : [];
-    const assignedLessonIds = new Set<string>(lessons.map(l => l.id).filter(id => !unplaced.includes(id)));
+    const assignedLessonIds = new Set<string>(
+      lessons
+        .filter((l) => !meetingLessonIds.has(l.id))
+        .map((l) => l.id)
+        .filter((id) => !unplaced.includes(id))
+    );
 
     // Summary por clase
     const assignedSummary: Record<string, { assignedSlots: number; sample: string | number }> = {};
@@ -400,21 +442,6 @@ export async function POST(req: Request) {
       assignedSummary[c.id] = { assignedSlots, sample };
     }
 
-    // Logs útiles
-    console.log("generateTimetable: result.stats", result.stats);
-    console.log("generateTimetable: timetable keys", Object.keys(normalized).slice(0,50));
-    console.log("generateTimetable: assignedSummary (first 10):", Object.entries(assignedSummary).slice(0,10));
-
-    // Log específico: cargas RELIGION
-    const religionCargas = Array.from(cargaMap.values()).filter(v => (v.asignaturaNombre || "").toLowerCase().includes("relig"));
-    if (religionCargas.length > 0) {
-      console.log("generateTimetable: religion cargas encontradas:", religionCargas.map(r => ({ id: r.id, claseId: r.claseId, docente: r.docenteNombre })));
-      for (const r of religionCargas) {
-        const arr = normalized[r.claseId] ?? [];
-        const foundIndex = arr.findIndex((cell: any) => cell && cell.cargaId === r.id);
-        console.log(`religion carga ${r.id} placed in clase ${r.claseId}: index=${foundIndex}`);
-      }
-    }
 
     // Prepare debug payload: include timetabler meta debug if present
     const unplacedDetails: Record<string, any> = {};
@@ -432,6 +459,7 @@ export async function POST(req: Request) {
         cargaId,
         asignatura: cm?.asignaturaNombre ?? cm?.asignaturaId ?? "Asignatura",
         docente: cm?.docenteNombre ?? cm?.docenteId ?? "Sin docente",
+        docenteId: cm?.docenteId ?? null,
         clase: (cm?.claseId && claseNameMap.get(cm.claseId)?.nombre) ?? cm?.claseId ?? "Clase",
         duracion: cm?.duracion ?? 1,
       };
@@ -443,7 +471,7 @@ export async function POST(req: Request) {
       unplaced,
       unplacedDetails,
       unplacedInfo,
-      lessonsTotal: lessons.length,
+      lessonsTotal: lessons.length - meetingLessons.length,
       assignedLessonsCount: assignedLessonIds.size,
       cargasTotal: cargas.length,
       timetablerMeta: result.meta ?? null,
@@ -459,16 +487,9 @@ export async function POST(req: Request) {
       },
     };
 
-    // Also console.log debugging summary small
-    console.log("generateTimetable: debug summary:", {
-      unplacedCount: (result.unplaced ?? []).length,
-      placedByGlobalGreedy: result.meta?.placedByGlobalGreedy ?? 0,
-      forcedTeacherConflicts: result.meta?.forcedTeacherConflicts?.length ?? 0,
-    });
-
     return NextResponse.json({
       timetable: normalized,
-      stats: result.stats,
+      stats: adjustedStats,
       unplaced,
       debug: debugPayload,
     }, { status: 200 });

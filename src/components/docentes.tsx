@@ -74,6 +74,19 @@ export function Docentes({ institucion, instituciones, onSeleccionarInstitucion,
     })
   }
 
+  function toggleDay(day: number) {
+    setAvailability((prev) => {
+      const next = prev.map((row) => row.slice())
+      const allBlocked = next[day]?.every((slot) => !slot)
+      if (allBlocked) {
+        next[day] = next[day].map(() => true)
+      } else {
+        next[day] = next[day].map(() => false)
+      }
+      return next
+    })
+  }
+
   function buildBloqueos() {
     const bloqueos: Array<{ dia: number; periodo: number }> = []
     for (let d = 0; d < availability.length; d++) {
@@ -278,6 +291,15 @@ export function Docentes({ institucion, instituciones, onSeleccionarInstitucion,
                     {availability.map((row, d) => (
                       <div key={`day-${d}`} className="flex items-center gap-2">
                         <div className="w-12 text-xs font-medium text-muted-foreground">{dayLabels[d] ?? `D${d + 1}`}</div>
+                        <label className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                          <input
+                            type="checkbox"
+                            className="h-3 w-3 accent-rose-500"
+                            checked={row.every((slot) => !slot)}
+                            onChange={() => toggleDay(d)}
+                          />
+                          Bloquear día
+                        </label>
                         <div className="flex flex-wrap gap-1">
                           {row.map((slot, p) => (
                             <button

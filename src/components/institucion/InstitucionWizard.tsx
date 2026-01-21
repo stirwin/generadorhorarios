@@ -55,6 +55,9 @@ export default function InstitucionWizard() {
   const [timetableStats, setTimetableStats] = useState<any | null>(null);
   const [horarioId, setHorarioId] = useState<string | null>(null);
   const [horarioCreatedAt, setHorarioCreatedAt] = useState<string | null>(null);
+  const [lastUnplacedIds, setLastUnplacedIds] = useState<string[]>([]);
+  const [lastUnplacedTeacherIds, setLastUnplacedTeacherIds] = useState<string[]>([]);
+  const [bestAssignedCount, setBestAssignedCount] = useState<number | null>(null);
 
   // NUEVO: metadatos / debug del timetabler (se muestran en la UI)
   const [timetableMeta, setTimetableMeta] = useState<any | null>(null);
@@ -106,6 +109,12 @@ export default function InstitucionWizard() {
   useEffect(() => {
     fetchInstituciones();
   }, []);
+
+  useEffect(() => {
+    setLastUnplacedIds([]);
+    setLastUnplacedTeacherIds([]);
+    setBestAssignedCount(null);
+  }, [institucionSeleccionada?.id]);
 
   async function fetchLatestHorario(institucionId: string) {
     try {
@@ -239,7 +248,13 @@ export default function InstitucionWizard() {
       const res = await fetch("/api/timetable/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ institucionId: institucionSeleccionada.id }),
+        body: JSON.stringify({
+          institucionId: institucionSeleccionada.id,
+          repairIterations: 1200,
+          repairSampleSize: 12,
+          priorityLessonIds: lastUnplacedIds.length > 0 ? lastUnplacedIds : undefined,
+          priorityTeacherIds: lastUnplacedTeacherIds.length > 0 ? lastUnplacedTeacherIds : undefined,
+        }),
       });
 
       const contentType = (res.headers.get("content-type") || "").toLowerCase();
@@ -284,6 +299,26 @@ export default function InstitucionWizard() {
             message = String(data).slice(0, 1000);
           }
         }
+        if (Array.isArray((data as any)?.teacherConflicts)) {
+          const details = (data as any).teacherConflicts
+            .slice(0, 6)
+            .map((c: any) => {
+              const subjects = Array.isArray(c.subjects) && c.subjects.length > 0 ? ` (${c.subjects.join(", ")})` : "";
+              return `${c.docenteNombre ?? c.docenteId}: requiere ${c.required}, disponible ${c.available}${subjects}`;
+            })
+            .join(" | ");
+          message = `${message} ${details}`;
+        }
+        if (Array.isArray((data as any)?.subjectDayConflicts)) {
+          const details = (data as any).subjectDayConflicts
+            .slice(0, 6)
+            .map((c: any) => {
+              const clase = c.claseNombre ?? c.claseId ?? "";
+              return `${c.docenteNombre ?? c.docenteId} ${c.asignatura} ${clase}: ${c.sesiones} sesiones > ${c.diasDisponibles} dias`;
+            })
+            .join(" | ");
+          message = `${message} ${details}`;
+        }
         if (Array.isArray((data as any)?.overCapacityClasses)) {
           const classMap = new Map<string, string>();
           (institucionSeleccionada?.clases ?? []).forEach((c: any) => {
@@ -304,21 +339,36 @@ export default function InstitucionWizard() {
       const returnedTimetable = (data && typeof data === "object" && data.timetable && typeof data.timetable === "object")
         ? (data.timetable as Record<string, Array<TimetableCell | null>>)
         : (data?.timetable === null ? {} : (data?.timetable ?? {}));
+      const nextAssigned = typeof data?.stats?.assigned === "number" ? data.stats.assigned : null;
 
-      // guardado tipado del timetable
-      setTimetable(returnedTimetable);
+      const shouldReplaceTimetable = bestAssignedCount === null || (nextAssigned !== null && nextAssigned >= bestAssignedCount);
+      if (shouldReplaceTimetable) {
+        setTimetable(returnedTimetable);
+      }
 
       // Agrega conteo de no asignadas para mostrarlo rápido en UI
       const unplacedFromServer = Array.isArray(data?.unplaced) ? data.unplaced : (Array.isArray(data?.debug?.unplaced) ? data.debug.unplaced : []);
-      setTimetableStats(data?.stats ? { ...data.stats, unplacedCount: unplacedFromServer.length } : null);
-      setHorarioId(null);
-      setHorarioCreatedAt(null);
+      if (shouldReplaceTimetable) {
+        setTimetableStats(data?.stats ? { ...data.stats, unplacedCount: unplacedFromServer.length } : null);
+      }
+      setLastUnplacedIds(Array.isArray(unplacedFromServer) ? unplacedFromServer : []);
+      const unplacedInfo = Array.isArray(data?.debug?.unplacedInfo) ? data.debug.unplacedInfo : [];
+      const teacherIds = unplacedInfo
+        .map((info: any) => info?.docenteId)
+        .filter((id: any) => typeof id === "string" && id.length > 0);
+      setLastUnplacedTeacherIds(teacherIds);
+      if (shouldReplaceTimetable) {
+        setHorarioId(null);
+        setHorarioCreatedAt(null);
+      }
 
       // ---------- NUEVO: extraer metadatos / debug ----------
       const metaCandidate = data?.debug
         ? { ...data.debug, timetablerMeta: data.debug.timetablerMeta ?? data?.meta ?? null }
         : (data?.meta ?? data?.debug?.timetablerMeta ?? null);
-      setTimetableMeta(metaCandidate);
+      if (shouldReplaceTimetable) {
+        setTimetableMeta(metaCandidate);
+      }
       console.log("timetable meta (candidate):", metaCandidate);
 
       const keys = Object.keys(returnedTimetable || {});
@@ -342,6 +392,12 @@ export default function InstitucionWizard() {
           console.warn("Error mostrando debug:", e);
         }
         console.groupEnd();
+      }
+      if (nextAssigned !== null && (bestAssignedCount === null || nextAssigned > bestAssignedCount)) {
+        setBestAssignedCount(nextAssigned);
+      }
+      if (!shouldReplaceTimetable && bestAssignedCount !== null && nextAssigned !== null) {
+        alert(`Se generó un horario con ${nextAssigned} asignadas, pero se mantiene el mejor (${bestAssignedCount}).`);
       }
       alert("Horario generado correctamente.");
     } catch (err: any) {
