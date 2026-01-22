@@ -23,6 +23,7 @@ type EditableDocente = {
   nombre: string
   abreviatura?: string
   direccionGrupoId?: string | null
+  directorLunesAplica?: boolean
   restricciones?: Array<{ dia: number; periodoInicio: number; periodoFin: number; tipo: string }>
 }
 
@@ -60,6 +61,7 @@ export function Docentes({ institucion, instituciones, onSeleccionarInstitucion,
       nombre: docente.nombre,
       abreviatura: docente.abreviatura,
       direccionGrupoId: docente.direccionGrupoId ?? null,
+      directorLunesAplica: docente.directorLunesAplica ?? true,
       restricciones: docente.restricciones ?? [],
     })
     setAvailability(buildAvailabilityFromDocente(docente))
@@ -108,6 +110,7 @@ export function Docentes({ institucion, instituciones, onSeleccionarInstitucion,
           nombre: form.nombre,
           abreviatura: form.abreviatura,
           direccionGrupoId: form.direccionGrupoId,
+          directorLunesAplica: form.directorLunesAplica,
           bloqueos: buildBloqueos(),
         }),
       })
@@ -277,6 +280,22 @@ export function Docentes({ institucion, instituciones, onSeleccionarInstitucion,
                     </SelectContent>
                   </Select>
                 </div>
+                {form.direccionGrupoId && (
+                  <label className="flex items-start gap-3 rounded-lg border p-3 text-sm">
+                    <input
+                      type="checkbox"
+                      className="mt-1 h-4 w-4 accent-emerald-600"
+                      checked={form.directorLunesAplica ?? true}
+                      onChange={(e) => setForm({ ...form, directorLunesAplica: e.target.checked })}
+                    />
+                    <span>
+                      <span className="block font-medium">Aplicar regla de director el lunes</span>
+                      <span className="block text-xs text-muted-foreground">
+                        Activa el inicio del lunes con su grupo cuando tenga dirección asignada.
+                      </span>
+                    </span>
+                  </label>
+                )}
               </div>
 
               <div className="space-y-3">

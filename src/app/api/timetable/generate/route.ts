@@ -2,9 +2,38 @@
 import { NextResponse } from "next/server";
 import { generateTimetable, LessonItem } from "@/lib/timetabler";
 import { prisma } from "@/lib/prisma";
+import { createHash } from "crypto";
+import { Agent } from "undici";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+
+const stableStringify = (value: unknown): string => {
+  if (value === null || value === undefined) return "null";
+  if (typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  }
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(record[k])}`).join(",")}}`;
+};
+
+const buildHintAssignments = (timetable: Record<string, Array<any>> | null | undefined) => {
+  const hintAssignments: Record<string, number> = {};
+  if (!timetable || typeof timetable !== "object") return hintAssignments;
+  for (const slots of Object.values(timetable)) {
+    if (!Array.isArray(slots)) continue;
+    slots.forEach((cell, idx) => {
+      if (!cell || typeof cell !== "object") return;
+      const lessonId = (cell as { lessonId?: unknown }).lessonId;
+      if (typeof lessonId === "string" && !(lessonId in hintAssignments)) {
+        hintAssignments[lessonId] = idx;
+      }
+    });
+  }
+  return hintAssignments;
+};
 
 export async function POST(req: Request) {
   try {
@@ -98,6 +127,7 @@ export async function POST(req: Request) {
     const forcedStartOptions: Record<string, number[]> = {};
     const forcedLabels: Record<string, string> = {};
     const forcedConflicts: Array<{ docenteId: string; claseId: string; reason: string }> = [];
+    const directorsApplied: Array<{ docenteId: string; claseId: string; lessonId: string; slot: number | null; label: string }> = [];
     const mondayStart = 0;
     const applyDirectorRule = institucion.director_lunes_primera !== false;
     const directorWindowMode = body?.directorWindowMode ?? "full-day";
@@ -107,7 +137,9 @@ export async function POST(req: Request) {
 
     const directorMap = new Map<string, string>();
     for (const d of docentes) {
-      if (d.direccionGrupoId) directorMap.set(d.id, d.direccionGrupoId);
+      if (d.direccionGrupoId && d.directorLunesAplica !== false) {
+        directorMap.set(d.id, d.direccionGrupoId);
+      }
     }
 
     if (applyDirectorRule) {
@@ -181,6 +213,13 @@ export async function POST(req: Request) {
         } else {
           forcedLabels[chosen.id] = "Dir. grupo (Lun)";
         }
+        directorsApplied.push({
+          docenteId,
+          claseId,
+          lessonId: chosen.id,
+          slot: allowedStarts.length === 1 ? allowedStarts[0] : null,
+          label: forcedLabels[chosen.id],
+        });
         forcedByClass.add(claseId);
       }
     }
@@ -417,6 +456,71 @@ export async function POST(req: Request) {
     }
 
     const meetingMaxPerDay = Math.max(1, Math.ceil(meetingLessons.length / Math.max(1, days)));
+    const subjectMaxDailySlots = Number(body?.subjectMaxDailySlots) || 2;
+    const constraintsHash = createHash("sha1")
+      .update(stableStringify({
+        days,
+        slotsPerDay,
+        meetingMaxPerDay,
+        subjectMaxDailySlots,
+        teacherBlockedSlots,
+        forcedStarts,
+        forcedStartOptions,
+        lessons: lessons.map((l) => ({
+          lessonId: l.lessonId,
+          claseId: l.claseId,
+          asignaturaId: l.asignaturaId,
+          docenteId: l.docenteId ?? null,
+          duracion: l.duracion,
+          isMeeting: Boolean((l as any).isMeeting),
+        })),
+      }))
+      .digest("hex");
+
+    const availabilityChecks = lessons
+      .filter((l: any) => !l.isMeeting)
+      .map((lesson) => {
+        const dur = lesson.duracion ?? 1;
+        const blocked = lesson.docenteId ? teacherBlockedSlots[lesson.docenteId] : undefined;
+        const availableDays: number[] = [];
+        let domainSize = 0;
+        for (let d = 0; d < days; d++) {
+          let dayHasSlot = false;
+          for (let start = 0; start <= slotsPerDay - dur; start++) {
+            let ok = true;
+            for (let k = 0; k < dur; k++) {
+              const idx = d * slotsPerDay + start + k;
+              if (blocked && blocked[idx]) {
+                ok = false;
+                break;
+              }
+            }
+            if (ok) {
+              domainSize += 1;
+              dayHasSlot = true;
+            }
+          }
+          if (dayHasSlot) availableDays.push(d);
+        }
+        return {
+          lessonId: lesson.lessonId,
+          cargaId: lesson.cargaId,
+          claseId: lesson.claseId,
+          asignaturaId: lesson.asignaturaId,
+          docenteId: lesson.docenteId ?? null,
+          duracion: dur,
+          availableDays,
+          domainSize,
+        };
+      });
+    const availabilityConflicts = availabilityChecks.filter((l) => l.domainSize === 0);
+    if (availabilityConflicts.length > 0) {
+      return NextResponse.json({
+        error: "Restricciones imposibles con la disponibilidad docente.",
+        constraintsHash,
+        availabilityConflicts,
+      }, { status: 400 });
+    }
 
     // Ejecutar generador: microservicio CP-SAT si existe URL, heuristico local si no
     const solverUrl = process.env.TIMETABLER_SOLVER_URL;
@@ -435,12 +539,35 @@ export async function POST(req: Request) {
       forcedStartOptions,
       forcedLabels,
       meetingMaxPerDay,
-      subjectMaxDailySlots: Number(body?.subjectMaxDailySlots) || 2,
+      subjectMaxDailySlots,
       priorityLessonIds: Array.isArray(body?.priorityLessonIds) ? body.priorityLessonIds : undefined,
       priorityTeacherIds: Array.isArray(body?.priorityTeacherIds) ? body.priorityTeacherIds : undefined,
     };
     let result;
     if (solverUrl) {
+      const hintAssignments: Record<string, number> = {};
+      let hybridHintCount = 0;
+      let hybridUsed = false;
+      const hybridSolve = body?.hybridSolve !== false;
+      const hintConstraintsHash = typeof body?.hintConstraintsHash === "string" ? body.hintConstraintsHash : null;
+      const hintTimetable = body?.hintTimetable;
+      if (hintConstraintsHash && hintConstraintsHash === constraintsHash && hintTimetable && typeof hintTimetable === "object") {
+        Object.assign(hintAssignments, buildHintAssignments(hintTimetable));
+      }
+      if (Object.keys(hintAssignments).length === 0 && hybridSolve) {
+        const localOptions = {
+          ...solverOptions,
+          timeLimitMs: Math.min(solverOptions.timeLimitMs, 60000),
+          maxRestarts: Math.min(solverOptions.maxRestarts ?? 4, 4),
+          repairIterations: Math.min(solverOptions.repairIterations ?? 200, 200),
+          repairSampleSize: Math.min(solverOptions.repairSampleSize ?? 6, 6),
+        };
+        const localResult = generateTimetable(institucionId, cls, lessons, days, slotsPerDay, localOptions);
+        const localHints = buildHintAssignments(localResult?.timetableByClase ?? {});
+        Object.assign(hintAssignments, localHints);
+        hybridHintCount = Object.keys(hintAssignments).length;
+        hybridUsed = hybridHintCount > 0;
+      }
       const payload = {
         days,
         slotsPerDay,
@@ -450,22 +577,58 @@ export async function POST(req: Request) {
         forcedStarts,
         forcedStartOptions,
         meetingMaxPerDay,
-        subjectMaxDailySlots: Number(body?.subjectMaxDailySlots) || 2,
+        subjectMaxDailySlots,
+        timeLimitMs: solverOptions.timeLimitMs,
+        maxRestarts: solverOptions.maxRestarts,
+        randomSeed: Number.isFinite(Number(body?.randomSeed)) ? Number(body?.randomSeed) : undefined,
+        hintAssignments: Object.keys(hintAssignments).length > 0 ? hintAssignments : undefined,
       };
-      const resp = await fetch(solverUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ payload }),
+      const controller = new AbortController();
+      const timeoutMs = Math.max(60000, solverOptions.timeLimitMs + 30000);
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+      const dispatcher = new Agent({
+        headersTimeout: timeoutMs,
+        bodyTimeout: timeoutMs,
       });
-      const solverData = await resp.json();
+      let resp;
+      let solverData: any = null;
+      try {
+        resp = await fetch(solverUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ payload }),
+          signal: controller.signal,
+          dispatcher,
+        });
+        solverData = await resp.json();
+      } catch (err: any) {
+        const timedOut = err?.name === "AbortError";
+        const cause = err?.cause;
+        const causeInfo = {
+          code: cause?.code ?? null,
+          message: cause?.message ?? null,
+          name: cause?.name ?? null,
+        };
+        return NextResponse.json({
+          error: timedOut ? "Solver remoto no respondió a tiempo." : "No se pudo conectar con el solver remoto.",
+          solver: "python",
+          constraintsHash,
+          solverData: { error: err?.message ?? String(err), cause: causeInfo },
+        }, { status: 502 });
+      } finally {
+        clearTimeout(timeoutId);
+      }
       if (!resp.ok || !solverData?.ok) {
         return NextResponse.json({
           error: solverData?.error ?? "Solver remoto fallo.",
           solver: "python",
+          constraintsHash,
           teacherConflicts: solverData?.teacherConflicts ?? [],
           subjectDayConflicts: solverData?.subjectDayConflicts ?? [],
           tightLessons: solverData?.tightLessons ?? [],
           tightLessonsBreakdown: solverData?.tightLessonsBreakdown ?? [],
+          realAvailability: availabilityChecks.filter((l) => l.domainSize <= 2),
+          hybridHints: { used: hybridUsed, count: hybridHintCount },
           solverData,
         }, { status: 400 });
       }
@@ -483,9 +646,14 @@ export async function POST(req: Request) {
         },
         meta: solverData.debug ?? {},
       };
+      result.meta = {
+        ...(result.meta ?? {}),
+        hybridHints: { used: hybridUsed, count: hybridHintCount },
+      };
     } else {
       result = generateTimetable(institucionId, cls, lessons, days, slotsPerDay, solverOptions);
     }
+    result.meta = { ...(result.meta ?? {}), constraintsHash };
 
     const meetingAssignmentMap = new Map<string, number>();
     const rawMeetingAssignments = Array.isArray(result.meta?.meetingAssignments) ? result.meta.meetingAssignments : [];
@@ -587,6 +755,7 @@ export async function POST(req: Request) {
       unplacedBreakdown: Array.isArray(result.meta?.unplacedBreakdown) ? result.meta.unplacedBreakdown : [],
       splitReport: Array.isArray(result.meta?.splitReport) ? result.meta.splitReport : [],
       saturatedClasses: Array.isArray(result.meta?.saturatedClasses) ? result.meta.saturatedClasses : [],
+      realAvailability: availabilityChecks.filter((l) => l.domainSize <= 2),
       subjectsExceedAvailableDays: Array.isArray(result.meta?.subjectsExceedAvailableDays)
         ? result.meta.subjectsExceedAvailableDays
         : [],
@@ -600,12 +769,14 @@ export async function POST(req: Request) {
         forcedCount: Object.keys(forcedStarts).length,
         conflicts: forcedConflicts,
         fallbacks: directorFallbacks,
+        applied: directorsApplied,
       },
       areaMeetings: {
         assigned: meetingAssignments,
         conflicts: meetingConflicts,
       },
       solver: solverUrl ? "python" : "local",
+      constraintsHash,
     };
 
     return NextResponse.json({
@@ -613,6 +784,7 @@ export async function POST(req: Request) {
       stats: adjustedStats,
       unplaced,
       solver: solverUrl ? "python" : "local",
+      constraintsHash,
       debug: debugPayload,
     }, { status: 200 });
 

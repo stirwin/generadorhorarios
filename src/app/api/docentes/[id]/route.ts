@@ -44,6 +44,8 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     const nombre = typeof body?.nombre === "string" ? body.nombre : null;
     const abreviatura = typeof body?.abreviatura === "string" ? body.abreviatura : null;
     const direccionGrupoId = typeof body?.direccionGrupoId === "string" ? body.direccionGrupoId : null;
+    const directorLunesAplica =
+      typeof body?.directorLunesAplica === "boolean" ? body.directorLunesAplica : null;
     const bloqueos = Array.isArray(body?.bloqueos) ? (body.bloqueos as Bloqueo[]) : [];
 
     const docente = await prisma.docente.findUnique({ where: { id: docenteId } });
@@ -52,12 +54,16 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     const ranges = buildRanges(bloqueos);
 
     await prisma.$transaction(async (tx) => {
+      const direccionGrupoUpdate = direccionGrupoId
+        ? { connect: { id: direccionGrupoId } }
+        : { disconnect: true };
       await tx.docente.update({
         where: { id: docenteId },
         data: {
           nombre: nombre ?? undefined,
           abreviatura: abreviatura ?? undefined,
-          direccionGrupoId,
+          direccionGrupo: direccionGrupoUpdate,
+          directorLunesAplica: directorLunesAplica ?? undefined,
         },
       });
       await tx.docenteRestriccion.deleteMany({ where: { docenteId } });

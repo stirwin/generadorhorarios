@@ -58,6 +58,7 @@ export default function InstitucionWizard() {
   const [lastUnplacedIds, setLastUnplacedIds] = useState<string[]>([]);
   const [lastUnplacedTeacherIds, setLastUnplacedTeacherIds] = useState<string[]>([]);
   const [bestAssignedCount, setBestAssignedCount] = useState<number | null>(null);
+  const [lastConstraintsHash, setLastConstraintsHash] = useState<string | null>(null);
 
   // NUEVO: metadatos / debug del timetabler (se muestran en la UI)
   const [timetableMeta, setTimetableMeta] = useState<any | null>(null);
@@ -114,6 +115,7 @@ export default function InstitucionWizard() {
     setLastUnplacedIds([]);
     setLastUnplacedTeacherIds([]);
     setBestAssignedCount(null);
+    setLastConstraintsHash(null);
   }, [institucionSeleccionada?.id]);
 
   async function fetchLatestHorario(institucionId: string) {
@@ -256,8 +258,13 @@ export default function InstitucionWizard() {
           repairCandidateStarts: 40,
           targetedReoptSize: 8,
           targetedReoptMaxAttempts: 2,
+          timeLimitMs: 240000,
+          maxRestarts: 4,
+          hybridSolve: true,
           priorityLessonIds: lastUnplacedIds.length > 0 ? lastUnplacedIds : undefined,
           priorityTeacherIds: lastUnplacedTeacherIds.length > 0 ? lastUnplacedTeacherIds : undefined,
+          hintTimetable: timetable ?? undefined,
+          hintConstraintsHash: lastConstraintsHash ?? undefined,
         }),
       });
 
@@ -388,9 +395,16 @@ export default function InstitucionWizard() {
         : (data?.meta ?? data?.debug?.timetablerMeta ?? null);
       if (shouldReplaceTimetable) {
         setTimetableMeta(metaCandidate);
+        const nextHash = typeof data?.constraintsHash === "string"
+          ? data.constraintsHash
+          : (typeof data?.debug?.constraintsHash === "string" ? data.debug.constraintsHash : null);
+        setLastConstraintsHash(nextHash);
       }
       void metaCandidate;
       if (data?.debug) {
+        if (Array.isArray(data.debug?.realAvailability)) {
+          console.log("debug.realAvailability:", data.debug.realAvailability);
+        }
         const unplacedIds = Array.isArray(data.debug?.unplaced) ? data.debug.unplaced : [];
         const cargaIds = Array.from(
           new Set(
@@ -540,6 +554,7 @@ export default function InstitucionWizard() {
                       setTimetableMeta(null);
                       setHorarioId(null);
                       setHorarioCreatedAt(null);
+                      setLastConstraintsHash(null);
                     }}
                   >
                     <div className="flex justify-between items-center">

@@ -41,6 +41,7 @@ model Docente {
   nombre        String
   abreviatura   String
   activo        Boolean  @default(true)
+  directorLunesAplica Boolean @default(true)
   direccionGrupoId String?
   institucionId String
   institucion   Institucion @relation(fields: [institucionId], references: [id])

@@ -17,6 +17,7 @@ export interface Docente {
   nombre: string;
   abreviatura?: string;
   direccionGrupoId?: string | null;
+  directorLunesAplica?: boolean;
   restricciones?: DocenteRestriccion[];
 }
 

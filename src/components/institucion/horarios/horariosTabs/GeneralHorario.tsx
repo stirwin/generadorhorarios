@@ -428,6 +428,31 @@ export default function VistaGeneralHorario({
       };
     });
   }, [meta, institucion.clases, institucion.docentes, institucion.asignaturas, diasNombres, horaLabels]);
+  const directorsApplied = useMemo(() => {
+    const raw = Array.isArray((meta as any)?.forcedDirector?.applied)
+      ? (meta as any).forcedDirector.applied
+      : [];
+    if (raw.length === 0) return [];
+    const claseById = new Map((institucion.clases ?? []).map((c) => [c.id, c]));
+    const docenteById = new Map((institucion.docentes ?? []).map((d) => [d.id, d]));
+    return raw.map((row: any) => {
+      const clase = claseById.get(row.claseId);
+      const docente = docenteById.get(row.docenteId);
+      const slot = typeof row.slot === "number" ? row.slot : null;
+      const day = slot != null ? Math.floor(slot / lecciones) : null;
+      const period = slot != null ? slot % lecciones : null;
+      const slotLabel = slot == null
+        ? "Lunes (variable)"
+        : `${diasNombres[day ?? 0] ?? `Dia ${Number(day ?? 0) + 1}`} ${horaLabels[period ?? 0] ?? String(Number(period ?? 0) + 1)}`;
+      return {
+        lessonId: row.lessonId ?? `${row.docenteId}-${row.claseId}`,
+        docenteNombre: docente?.nombre ?? row.docenteId,
+        claseNombre: clase?.nombre ?? clase?.abreviatura ?? row.claseId,
+        label: row.label ?? "Dirección de grupo",
+        slotLabel,
+      };
+    });
+  }, [meta, institucion.clases, institucion.docentes, diasNombres, horaLabels, lecciones]);
   const saturatedClasses = useMemo(() => {
     const raw = Array.isArray((meta as any)?.saturatedClasses) ? (meta as any).saturatedClasses : [];
     if (raw.length === 0) return [];
@@ -822,6 +847,41 @@ export default function VistaGeneralHorario({
                     <td className="p-2">{row.docente}</td>
                     <td className="p-2">{row.originalDuracion} slots</td>
                     <td className="p-2">{row.slotsLabel}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+      {directorsApplied.length > 0 && (
+        <div className="mt-4 border rounded-lg bg-muted/10 p-4">
+          <div className="flex items-center justify-between gap-4 mb-3">
+            <div>
+              <div className="text-sm font-semibold">Directores con regla aplicada</div>
+              <div className="text-xs text-muted-foreground">
+                Estos directores iniciaron con su grupo segun la regla configurada.
+              </div>
+            </div>
+            <Badge variant="secondary">{directorsApplied.length}</Badge>
+          </div>
+          <div className="overflow-auto">
+            <table className="min-w-full text-xs border-collapse">
+              <thead>
+                <tr className="text-left">
+                  <th className="p-2 border-b">Docente</th>
+                  <th className="p-2 border-b">Grupo</th>
+                  <th className="p-2 border-b">Regla</th>
+                  <th className="p-2 border-b">Slot</th>
+                </tr>
+              </thead>
+              <tbody>
+                {directorsApplied.map((row: any) => (
+                  <tr key={row.lessonId} className="border-b last:border-b-0">
+                    <td className="p-2">{row.docenteNombre}</td>
+                    <td className="p-2">{row.claseNombre}</td>
+                    <td className="p-2">{row.label}</td>
+                    <td className="p-2">{row.slotLabel}</td>
                   </tr>
                 ))}
               </tbody>
