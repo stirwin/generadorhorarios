@@ -191,6 +191,7 @@ export default function VistaGeneralHorario({
     });
   }, [meta, institucion.cargas, institucion.clases, institucion.docentes, institucion.asignaturas]);
 
+
   type DragItem = {
     id: string;
     cargaId: string;
@@ -401,6 +402,147 @@ export default function VistaGeneralHorario({
   const horaLabels: string[] = useMemo(() => {
     return Array.from({ length: lecciones }, (_, i) => String(i + 1));
   }, [lecciones]);
+  const splitReport = useMemo(() => {
+    const raw = Array.isArray(meta?.splitReport) ? meta.splitReport : [];
+    if (raw.length === 0) return [];
+    const claseById = new Map((institucion.clases ?? []).map((c) => [c.id, c]));
+    const docenteById = new Map((institucion.docentes ?? []).map((d) => [d.id, d]));
+    const asignaturaById = new Map((institucion.asignaturas ?? []).map((a) => [a.id, a]));
+    return raw.map((r: any) => {
+      const clase = claseById.get(r.claseId);
+      const docente = r.docenteId ? docenteById.get(r.docenteId) : undefined;
+      const asignatura = asignaturaById.get(r.asignaturaId);
+      const slots = Array.isArray(r.splitSlots) ? r.splitSlots : [];
+      const slotsLabel = slots.map((s: any) => {
+        const dayName = diasNombres[s.day] ?? `Dia ${Number(s.day) + 1}`;
+        const hora = horaLabels[s.period] ?? String(Number(s.period) + 1);
+        return `${dayName} ${hora}`;
+      }).join(" · ");
+      return {
+        lessonId: r.lessonId,
+        clase: clase?.nombre ?? clase?.abreviatura ?? r.claseId,
+        asignatura: asignatura?.nombre ?? asignatura?.abreviatura ?? r.asignaturaId,
+        docente: docente?.nombre ?? r.docenteId ?? "Sin docente",
+        originalDuracion: r.originalDuracion ?? 2,
+        slotsLabel,
+      };
+    });
+  }, [meta, institucion.clases, institucion.docentes, institucion.asignaturas, diasNombres, horaLabels]);
+  const saturatedClasses = useMemo(() => {
+    const raw = Array.isArray((meta as any)?.saturatedClasses) ? (meta as any).saturatedClasses : [];
+    if (raw.length === 0) return [];
+    const claseById = new Map((institucion.clases ?? []).map((c) => [c.id, c]));
+    return raw.map((entry: any) => {
+      const clase = claseById.get(entry.claseId);
+      return {
+        claseId: entry.claseId,
+        claseNombre: clase?.nombre ?? clase?.abreviatura ?? entry.claseId,
+        assignedSlots: entry.assignedSlots ?? 0,
+        capacity: entry.capacity ?? 0,
+        pendingCount: entry.pendingCount ?? 0,
+      };
+    });
+  }, [meta, institucion.clases]);
+  const teacherConflicts = useMemo(() => {
+    const raw = Array.isArray(meta?.teacherConflicts) ? meta.teacherConflicts : [];
+    if (raw.length === 0) return [];
+    const docenteById = new Map((institucion.docentes ?? []).map((d) => [d.id, d]));
+    const asignaturaById = new Map((institucion.asignaturas ?? []).map((a) => [a.id, a]));
+    return raw.map((entry: any) => {
+      const docente = docenteById.get(entry.docenteId);
+      const subjects = Array.isArray(entry.subjects) ? entry.subjects : [];
+      const subjectLabels = subjects.map((s: any) => {
+        const asignatura = asignaturaById.get(s.asignaturaId);
+        const nombre = asignatura?.nombre ?? asignatura?.abreviatura ?? s.asignaturaId ?? "Asignatura";
+        return `${nombre} (${s.slots})`;
+      });
+      return {
+        docenteId: entry.docenteId,
+        docenteNombre: docente?.nombre ?? entry.docenteId,
+        requiredSlots: entry.requiredSlots ?? 0,
+        availableSlots: entry.availableSlots ?? 0,
+        blockedSlots: entry.blockedSlots ?? 0,
+        meetingSlots: entry.meetingSlots ?? 0,
+        availableDays: Array.isArray(entry.availableDays) ? entry.availableDays : [],
+        subjectLabels,
+      };
+    });
+  }, [meta, institucion.docentes, institucion.asignaturas]);
+  const subjectDayConflicts = useMemo(() => {
+    const raw = Array.isArray(meta?.subjectDayConflicts) ? meta.subjectDayConflicts : [];
+    if (raw.length === 0) return [];
+    const docenteById = new Map((institucion.docentes ?? []).map((d) => [d.id, d]));
+    const claseById = new Map((institucion.clases ?? []).map((c) => [c.id, c]));
+    const asignaturaById = new Map((institucion.asignaturas ?? []).map((a) => [a.id, a]));
+    return raw.map((entry: any) => {
+      const docente = docenteById.get(entry.docenteId);
+      const clase = claseById.get(entry.claseId);
+      const asignatura = asignaturaById.get(entry.asignaturaId);
+      return {
+        docenteId: entry.docenteId,
+        docenteNombre: docente?.nombre ?? entry.docenteId,
+        claseNombre: clase?.nombre ?? clase?.abreviatura ?? entry.claseId,
+        asignaturaNombre: asignatura?.nombre ?? asignatura?.abreviatura ?? entry.asignaturaId,
+        requiredSlots: entry.requiredSlots ?? 0,
+        maxSlots: entry.maxSlots ?? 0,
+        availableDays: Array.isArray(entry.availableDays) ? entry.availableDays : [],
+      };
+    });
+  }, [meta, institucion.docentes, institucion.clases, institucion.asignaturas]);
+  const tightLessons = useMemo(() => {
+    const raw = Array.isArray((meta as any)?.tightLessons) ? (meta as any).tightLessons : [];
+    if (raw.length === 0) return [];
+    const docenteById = new Map((institucion.docentes ?? []).map((d) => [d.id, d]));
+    const claseById = new Map((institucion.clases ?? []).map((c) => [c.id, c]));
+    const asignaturaById = new Map((institucion.asignaturas ?? []).map((a) => [a.id, a]));
+    return raw.map((entry: any) => {
+      const docente = docenteById.get(entry.docenteId);
+      const clase = claseById.get(entry.claseId);
+      const asignatura = asignaturaById.get(entry.asignaturaId);
+      const domainSize = typeof entry.domainSize === "number" ? entry.domainSize : (typeof entry.candidateCount === "number" ? entry.candidateCount : 0);
+      const availableDays = Array.isArray(entry.availableDays) ? entry.availableDays : [];
+      return {
+        lessonId: entry.lessonId,
+        docenteNombre: docente?.nombre ?? entry.docenteId,
+        claseNombre: clase?.nombre ?? clase?.abreviatura ?? entry.claseId,
+        asignaturaNombre: asignatura?.nombre ?? asignatura?.abreviatura ?? entry.asignaturaId,
+        duracion: entry.duracion ?? 1,
+        domainSize,
+        availableDays,
+      };
+    });
+  }, [meta, institucion.docentes, institucion.clases, institucion.asignaturas]);
+  const tightLessonsBreakdown = useMemo(() => {
+    const raw = Array.isArray((meta as any)?.tightLessonsBreakdown) ? (meta as any).tightLessonsBreakdown : [];
+    if (raw.length === 0) return [];
+    const docenteById = new Map((institucion.docentes ?? []).map((d) => [d.id, d]));
+    const claseById = new Map((institucion.clases ?? []).map((c) => [c.id, c]));
+    const asignaturaById = new Map((institucion.asignaturas ?? []).map((a) => [a.id, a]));
+    return raw.map((entry: any) => {
+      const docente = docenteById.get(entry.docenteId);
+      const clase = claseById.get(entry.claseId);
+      const asignatura = asignaturaById.get(entry.asignaturaId);
+      const availableDays = Array.isArray(entry.availableDays) ? entry.availableDays : [];
+      return {
+        lessonId: entry.lessonId,
+        docenteNombre: docente?.nombre ?? entry.docenteId,
+        claseNombre: clase?.nombre ?? clase?.abreviatura ?? entry.claseId,
+        asignaturaNombre: asignatura?.nombre ?? asignatura?.abreviatura ?? entry.asignaturaId,
+        duracion: entry.duracion ?? 1,
+        domainSize: entry.domainSize ?? 0,
+        availableDays,
+        totalStarts: entry.totalStarts ?? 0,
+        freeStarts: entry.freeStarts ?? 0,
+        outOfBounds: entry.outOfBounds ?? 0,
+        teacherBlocked: entry.teacherBlocked ?? 0,
+        classConflict: entry.classConflict ?? 0,
+        teacherConflict: entry.teacherConflict ?? 0,
+        subjectDayConflict: entry.subjectDayConflict ?? 0,
+        meetingDayConflict: entry.meetingDayConflict ?? 0,
+        forcedStartConflict: entry.forcedStartConflict ?? 0,
+      };
+    });
+  }, [meta, institucion.docentes, institucion.clases, institucion.asignaturas]);
   const breakAfterIndex = 2;
   const breakPercent = useMemo(() => {
     if (lecciones <= 0) return 50;
@@ -649,6 +791,216 @@ export default function VistaGeneralHorario({
           </tbody>
         </table>
       </div>
+
+      {splitReport.length > 0 && (
+        <div className="mt-6 border rounded-lg bg-muted/10 p-4">
+          <div className="flex items-center justify-between gap-4 mb-3">
+            <div>
+              <div className="text-sm font-semibold">Reporte de ajustes de duración</div>
+              <div className="text-xs text-muted-foreground">
+                Estas asignaturas se dividieron en bloques de 1 slot por falta de bloques dobles disponibles.
+              </div>
+            </div>
+            <Badge variant="secondary">{splitReport.length}</Badge>
+          </div>
+          <div className="overflow-auto">
+            <table className="min-w-full text-xs border-collapse">
+              <thead>
+                <tr className="text-left">
+                  <th className="p-2 border-b">Clase</th>
+                  <th className="p-2 border-b">Asignatura</th>
+                  <th className="p-2 border-b">Docente</th>
+                  <th className="p-2 border-b">Duración original</th>
+                  <th className="p-2 border-b">Slots asignados</th>
+                </tr>
+              </thead>
+              <tbody>
+                {splitReport.map((row: any) => (
+                  <tr key={row.lessonId} className="border-b last:border-b-0">
+                    <td className="p-2">{row.clase}</td>
+                    <td className="p-2">{row.asignatura}</td>
+                    <td className="p-2">{row.docente}</td>
+                    <td className="p-2">{row.originalDuracion} slots</td>
+                    <td className="p-2">{row.slotsLabel}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+      {teacherConflicts.length > 0 && (
+        <div className="mt-4 border rounded-lg bg-amber-50/70 p-4">
+          <div className="flex items-center justify-between gap-4 mb-3">
+            <div>
+              <div className="text-sm font-semibold text-amber-900">
+                Disponibilidad insuficiente por docente
+              </div>
+              <div className="text-xs text-amber-900/80">
+                Estos docentes requieren mas slots de los disponibles segun sus restricciones.
+              </div>
+            </div>
+            <Badge variant="secondary">{teacherConflicts.length}</Badge>
+          </div>
+          <div className="space-y-3 text-sm">
+            {teacherConflicts.map((row) => (
+              <div key={row.docenteId} className="rounded-md border bg-background p-3">
+                <div className="font-medium">{row.docenteNombre}</div>
+                <div className="text-muted-foreground">
+                  Requiere {row.requiredSlots} slots · Disponibles {row.availableSlots} · Bloqueados {row.blockedSlots} · Reuniones {row.meetingSlots}
+                </div>
+                {row.availableDays.length > 0 && (
+                  <div className="text-muted-foreground">
+                    Dias disponibles: {row.availableDays.map((d: number) => diasNombres[d] ?? `Dia ${d + 1}`).join(", ")}
+                  </div>
+                )}
+                {row.subjectLabels.length > 0 && (
+                  <div className="text-muted-foreground">
+                    Asignaturas: {row.subjectLabels.join(", ")}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {subjectDayConflicts.length > 0 && (
+        <div className="mt-4 border rounded-lg bg-amber-50/70 p-4">
+          <div className="flex items-center justify-between gap-4 mb-3">
+            <div>
+              <div className="text-sm font-semibold text-amber-900">
+                Limite diario por asignatura excedido
+              </div>
+              <div className="text-xs text-amber-900/80">
+                Estos docentes no alcanzan a repartir sus slots con el limite diario actual.
+              </div>
+            </div>
+            <Badge variant="secondary">{subjectDayConflicts.length}</Badge>
+          </div>
+          <div className="space-y-3 text-sm">
+            {subjectDayConflicts.map((row) => (
+              <div key={`${row.docenteId}-${row.claseNombre}-${row.asignaturaNombre}`} className="rounded-md border bg-background p-3">
+                <div className="font-medium">{row.docenteNombre}</div>
+                <div className="text-muted-foreground">
+                  {row.asignaturaNombre} · {row.claseNombre}
+                </div>
+                <div className="text-muted-foreground">
+                  Requiere {row.requiredSlots} slots · Maximo {row.maxSlots}
+                </div>
+                {row.availableDays.length > 0 && (
+                  <div className="text-muted-foreground">
+                    Dias disponibles: {row.availableDays.map((d: number) => diasNombres[d] ?? `Dia ${d + 1}`).join(", ")}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {(tightLessons.length > 0 || tightLessonsBreakdown.length > 0) && (
+        <div className="mt-4 border rounded-lg bg-amber-50/70 p-4">
+          <div className="flex items-center justify-between gap-4 mb-3">
+            <div>
+              <div className="text-sm font-semibold text-amber-900">
+                Lecciones con dominio reducido
+              </div>
+              <div className="text-xs text-amber-900/80">
+                Estas lecciones casi no tienen slots posibles segun las restricciones actuales.
+              </div>
+            </div>
+            <Badge variant="secondary">{tightLessonsBreakdown.length || tightLessons.length}</Badge>
+          </div>
+          <div className="overflow-auto">
+            <table className="min-w-full text-xs border-collapse">
+              <thead>
+                <tr className="text-left">
+                  <th className="p-2 border-b">Clase</th>
+                  <th className="p-2 border-b">Asignatura</th>
+                  <th className="p-2 border-b">Docente</th>
+                  <th className="p-2 border-b">Duracion</th>
+                  <th className="p-2 border-b">Dominio</th>
+                  <th className="p-2 border-b">Dias disponibles</th>
+                  {tightLessonsBreakdown.length > 0 && (
+                    <>
+                      <th className="p-2 border-b">Libres</th>
+                      <th className="p-2 border-b">Clase</th>
+                      <th className="p-2 border-b">Docente</th>
+                      <th className="p-2 border-b">Asignatura/dia</th>
+                      <th className="p-2 border-b">Bloqueado</th>
+                      <th className="p-2 border-b">Reunion</th>
+                      <th className="p-2 border-b">Forzado</th>
+                    </>
+                  )}
+                </tr>
+              </thead>
+              <tbody>
+                {(tightLessonsBreakdown.length > 0 ? tightLessonsBreakdown : tightLessons).map((row: any) => (
+                  <tr key={row.lessonId} className="border-b last:border-b-0">
+                    <td className="p-2">{row.claseNombre}</td>
+                    <td className="p-2">{row.asignaturaNombre}</td>
+                    <td className="p-2">{row.docenteNombre}</td>
+                    <td className="p-2">{row.duracion}</td>
+                    <td className="p-2 font-semibold text-amber-900">{row.domainSize}</td>
+                    <td className="p-2">
+                      {row.availableDays.length > 0
+                        ? row.availableDays.map((d: number) => diasNombres[d] ?? `Dia ${d + 1}`).join(", ")
+                        : "—"}
+                    </td>
+                    {tightLessonsBreakdown.length > 0 && (
+                      <>
+                        <td className="p-2 font-semibold text-amber-900">{row.freeStarts}</td>
+                        <td className="p-2">{row.classConflict}</td>
+                        <td className="p-2">{row.teacherConflict}</td>
+                        <td className="p-2">{row.subjectDayConflict}</td>
+                        <td className="p-2">{row.teacherBlocked}</td>
+                        <td className="p-2">{row.meetingDayConflict}</td>
+                        <td className="p-2">{row.forcedStartConflict}</td>
+                      </>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+      {saturatedClasses.length > 0 && (
+        <div className="mt-4 border rounded-lg bg-amber-50/70 p-4">
+          <div className="flex items-center justify-between gap-4 mb-3">
+            <div>
+              <div className="text-sm font-semibold text-amber-900">
+                Clases saturadas detectadas
+              </div>
+              <div className="text-xs text-amber-900/80">
+                Estas clases ya están al 100% de capacidad, pero aún tienen cargas pendientes.
+              </div>
+            </div>
+            <Badge variant="secondary">{saturatedClasses.length}</Badge>
+          </div>
+          <div className="overflow-auto">
+            <table className="min-w-full text-xs border-collapse">
+              <thead>
+                <tr className="text-left">
+                  <th className="p-2 border-b">Clase</th>
+                  <th className="p-2 border-b">Asignados</th>
+                  <th className="p-2 border-b">Capacidad</th>
+                  <th className="p-2 border-b">Pendientes</th>
+                </tr>
+              </thead>
+              <tbody>
+                {saturatedClasses.map((row: any) => (
+                  <tr key={row.claseId} className="border-b last:border-b-0">
+                    <td className="p-2">{row.claseNombre}</td>
+                    <td className="p-2">{row.assignedSlots}</td>
+                    <td className="p-2">{row.capacity}</td>
+                    <td className="p-2 font-semibold text-amber-900">{row.pendingCount}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
     </div>
   );

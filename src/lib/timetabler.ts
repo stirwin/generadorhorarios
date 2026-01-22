@@ -63,7 +63,7 @@ function shuffleInPlace<T>(arr: T[]) {
  *  - Un docente no puede estar en dos clases en el mismo slot.
  *  - Una clase no puede tener dos asignaturas en el mismo slot.
  *  - Duracion continua.
- *  - La misma carga (misma clase/asignatura/docente) no se repite en el mismo dia.
+ *  - La misma carga (misma clase/asignatura/docente) no supera el maximo diario de slots.
  */
 export function generateTimetable(
   institucionId: string | null,
@@ -83,8 +83,12 @@ export function generateTimetable(
     repairSampleSize?: number;
     repairMaxConflicts?: number;
     repairCandidateStarts?: number;
+    targetedReoptSize?: number;
+    targetedReoptMaxAttempts?: number;
+    candidateSampleLimit?: number;
     priorityLessonIds?: string[];
     priorityTeacherIds?: string[];
+    subjectMaxDailySlots?: number;
   }
 ): TimetableResult {
   const maxBacktracks = options?.maxBacktracks ?? 600000;
@@ -98,7 +102,12 @@ export function generateTimetable(
   const repairSampleSize = options?.repairSampleSize ?? 6;
   const repairMaxConflicts = options?.repairMaxConflicts ?? 2;
   const repairCandidateStarts = options?.repairCandidateStarts ?? 20;
+  const targetedReoptSize = options?.targetedReoptSize ?? 0;
+  const targetedReoptMaxAttempts = options?.targetedReoptMaxAttempts ?? 1;
+  const candidateSampleLimit = options?.candidateSampleLimit ?? 40;
   const priorityTeacherIds = new Set(options?.priorityTeacherIds ?? []);
+  const subjectMaxDailySlots = options?.subjectMaxDailySlots ?? 2;
+  const forcedStartOptions = options?.forcedStartOptions ?? {};
 
   const startTime = Date.now();
   const totalSlots = days * slotsPerDay;
@@ -151,11 +160,17 @@ export function generateTimetable(
     }
     baseDomains.set(L.id, domain);
   }
+  for (const [lessonId, starts] of Object.entries(forcedStartOptions)) {
+    if (!Array.isArray(starts) || starts.length === 0) continue;
+    baseDomains.set(lessonId, starts.slice());
+  }
 
   // -------------------------
   // prechecks de factibilidad
   // -------------------------
   const subjectCounts: Record<string, number> = {};
+  const subjectSlotCounts: Record<string, number> = {};
+  const subjectDurations: Record<string, number> = {};
   function subjectKeyForLesson(L: LessonItem) {
     if (L.kind === "meeting") return null;
     return `${L.claseId}::${L.asignaturaId}::${L.docenteId ?? "no-docente"}`;
@@ -164,11 +179,78 @@ export function generateTimetable(
     const key = subjectKeyForLesson(L);
     if (!key) continue;
     subjectCounts[key] = (subjectCounts[key] ?? 0) + 1;
+    subjectSlotCounts[key] = (subjectSlotCounts[key] ?? 0) + L.duracion;
+    subjectDurations[key] = Math.max(subjectDurations[key] ?? 0, L.duracion);
   }
   let priorityLessonIds = new Set(options?.priorityLessonIds ?? []);
-  const subjectsExceedDays = Object.entries(subjectCounts)
-    .filter(([, count]) => count > days)
-    .map(([subjectKey, count]) => ({ subjectKey, sesiones: count, days }));
+  const subjectsExceedDays = Object.entries(subjectSlotCounts)
+    .filter(([, slotsNeeded]) => slotsNeeded > days * subjectMaxDailySlots)
+    .map(([subjectKey, slotsNeeded]) => ({
+      subjectKey,
+      slotsNeeded,
+      maxSlots: days * subjectMaxDailySlots,
+      days,
+      maxDailySlots: subjectMaxDailySlots,
+    }));
+
+  const availableDaysCache = new Map<string, number>();
+  function availableDaysForTeacher(teacherId: string, duracion: number) {
+    const cacheKey = `${teacherId}::${duracion}`;
+    const cached = availableDaysCache.get(cacheKey);
+    if (cached !== undefined) return cached;
+    const blockedArr = teacherBlockedSlots[teacherId];
+    if (!blockedArr) {
+      availableDaysCache.set(cacheKey, days);
+      return days;
+    }
+    let availableDays = 0;
+    for (let d = 0; d < days; d++) {
+      let dayOk = false;
+      for (let p = 0; p + duracion <= slotsPerDay; p++) {
+        let blocked = false;
+        for (let k = 0; k < duracion; k++) {
+          const idx = slotIndex(d, p + k, slotsPerDay);
+          if (blockedArr[idx]) {
+            blocked = true;
+            break;
+          }
+        }
+        if (!blocked) {
+          dayOk = true;
+          break;
+        }
+      }
+      if (dayOk) availableDays += 1;
+    }
+    availableDaysCache.set(cacheKey, availableDays);
+    return availableDays;
+  }
+
+  const subjectsExceedAvailableDays = Object.entries(subjectSlotCounts)
+    .map(([subjectKey, slotsNeeded]) => {
+      const [, , docenteId] = subjectKey.split("::");
+      if (!docenteId || docenteId === "no-docente") return null;
+      const duracion = subjectDurations[subjectKey] ?? 1;
+      const availableDays = availableDaysForTeacher(docenteId, duracion);
+      const maxSlots = availableDays * subjectMaxDailySlots;
+      if (slotsNeeded <= maxSlots) return null;
+      return {
+        subjectKey,
+        slotsNeeded,
+        maxSlots,
+        availableDays,
+        docenteId,
+        duracion,
+      };
+    })
+    .filter(Boolean) as Array<{
+      subjectKey: string;
+      slotsNeeded: number;
+      maxSlots: number;
+      availableDays: number;
+      docenteId: string;
+      duracion: number;
+    }>;
 
   const classCapacity: Record<string, { requiredSlots: number; capacity: number }> = {};
   for (const c of classes) classCapacity[c.id] = { requiredSlots: 0, capacity: totalSlots };
@@ -182,7 +264,7 @@ export function generateTimetable(
     .filter(([, v]) => v.requiredSlots > v.capacity)
     .map(([claseId, v]) => ({ claseId, ...v }));
 
-  if (subjectsExceedDays.length > 0 || classOverCapacity.length > 0) {
+  if (subjectsExceedDays.length > 0 || classOverCapacity.length > 0 || subjectsExceedAvailableDays.length > 0) {
     return {
       timetableByClase,
       success: false,
@@ -199,6 +281,7 @@ export function generateTimetable(
         infeasible: true,
         subjectsExceedDays,
         classOverCapacity,
+        subjectsExceedAvailableDays,
       },
     };
   }
@@ -302,7 +385,10 @@ export function generateTimetable(
     if (period + L.duracion > slotsPerDay) return false;
     const isMeeting = L.kind === "meeting";
     const subjectKey = subjectKeyForLesson(L);
-    if (!isMeeting && subjectKey && (subjectDayCount[subjectKey]?.[day] ?? 0) > 0) return false;
+    if (!isMeeting && subjectKey) {
+      const used = subjectDayCount[subjectKey]?.[day] ?? 0;
+      if (used + L.duracion > subjectMaxDailySlots) return false;
+    }
     if (isMeeting && meetingDayCount[day] >= meetingMaxPerDay) return false;
     const classArr = isMeeting ? null : classOcc[L.claseId];
     if (!isMeeting && !classArr) return false;
@@ -351,7 +437,7 @@ export function generateTimetable(
       meetingDayCount[day] += 1;
     } else {
       const subjectKey = subjectKeyForLesson(L);
-      if (subjectKey) subjectDayCount[subjectKey][day] += 1;
+      if (subjectKey) subjectDayCount[subjectKey][day] += L.duracion;
     }
   }
 
@@ -374,7 +460,9 @@ export function generateTimetable(
       meetingDayCount[day] = Math.max(0, meetingDayCount[day] - 1);
     } else {
       const subjectKey = subjectKeyForLesson(L);
-      if (subjectKey) subjectDayCount[subjectKey][day] = Math.max(0, subjectDayCount[subjectKey][day] - 1);
+      if (subjectKey) {
+        subjectDayCount[subjectKey][day] = Math.max(0, subjectDayCount[subjectKey][day] - L.duracion);
+      }
     }
   }
 
@@ -384,6 +472,13 @@ export function generateTimetable(
     const forcedStart = forcedStarts[L.id];
     if (typeof forcedStart === "number") {
       return canPlaceLesson(L, forcedStart) ? [forcedStart] : [];
+    }
+    const forcedOptions = forcedStartOptions[L.id];
+    if (Array.isArray(forcedOptions) && forcedOptions.length > 0) {
+      for (const start of forcedOptions) {
+        if (canPlaceLesson(L, start)) valid.push(start);
+      }
+      return valid;
     }
     for (const start of domain) {
       if (canPlaceLesson(L, start)) valid.push(start);
@@ -635,7 +730,8 @@ export function generateTimetable(
         }
       }
     }
-    if (unplacedSet.size > 0 && repairMaxConflicts > 0) {
+    const conflictSwapPass = (maxConflicts: number, candidateStarts: number) => {
+      if (unplacedSet.size === 0 || maxConflicts <= 0) return;
       const unplacedIds = Array.from(unplacedSet);
       shuffleInPlace(unplacedIds);
       for (const lid of unplacedIds) {
@@ -645,7 +741,7 @@ export function generateTimetable(
           continue;
         }
         const domain = baseDomains.get(L.id) ?? [];
-        const candidates = shuffleInPlace([...domain]).slice(0, repairCandidateStarts);
+        const candidates = shuffleInPlace([...domain]).slice(0, candidateStarts);
         let placed = false;
         for (const start of candidates) {
           if (canPlaceLesson(L, start)) {
@@ -661,7 +757,6 @@ export function generateTimetable(
             const P = lessonById.get(pid);
             if (!P) continue;
             if (!rangesOverlap(start, L.duracion, pStart, P.duracion)) continue;
-            if (P.kind === "meeting") continue;
             if (forcedStarts[pid] !== undefined) continue;
             const sameClass = L.kind !== "meeting" && P.claseId === L.claseId;
             const teacherOverlap = (() => {
@@ -672,9 +767,9 @@ export function generateTimetable(
             if (sameClass || teacherOverlap) {
               conflicts.add(pid);
             }
-            if (conflicts.size > repairMaxConflicts) break;
+            if (conflicts.size > maxConflicts) break;
           }
-          if (conflicts.size === 0 || conflicts.size > repairMaxConflicts) continue;
+          if (conflicts.size === 0 || conflicts.size > maxConflicts) continue;
 
           const removed: Array<{ lesson: LessonItem; start: number }> = [];
           for (const pid of conflicts) {
@@ -695,19 +790,23 @@ export function generateTimetable(
           placeLesson(L, start);
           assignment.set(L.id, start);
 
-          let restoredAll = true;
-          for (const r of removed) {
-            const valid = getValidStarts(r.lesson);
-            if (valid.length === 0) {
-              restoredAll = false;
-              break;
+          function tryReinsert(idx: number): boolean {
+            if (idx >= removed.length) return true;
+            const r = removed[idx];
+            const domain = baseDomains.get(r.lesson.id) ?? [];
+            const candidates = shuffleInPlace([...domain]).slice(0, candidateStarts);
+            for (const startOpt of candidates) {
+              if (!canPlaceLesson(r.lesson, startOpt)) continue;
+              placeLesson(r.lesson, startOpt);
+              assignment.set(r.lesson.id, startOpt);
+              if (tryReinsert(idx + 1)) return true;
+              assignment.delete(r.lesson.id);
+              unplaceLesson(r.lesson, startOpt);
             }
-            const newStart = valid[Math.floor(Math.random() * valid.length)];
-            placeLesson(r.lesson, newStart);
-            assignment.set(r.lesson.id, newStart);
+            return false;
           }
 
-          if (restoredAll) {
+          if (tryReinsert(0)) {
             unplacedSet.delete(L.id);
             placed = true;
             break;
@@ -723,13 +822,356 @@ export function generateTimetable(
         }
         if (placed) continue;
       }
+    };
+
+    conflictSwapPass(repairMaxConflicts, repairCandidateStarts);
+    if (unplacedSet.size > 0 && unplacedSet.size <= 10) {
+      const aggressiveConflicts = Math.max(repairMaxConflicts, 6);
+      const aggressiveStarts = Math.max(repairCandidateStarts, 60);
+      conflictSwapPass(aggressiveConflicts, aggressiveStarts);
+    }
+
+    if (unplacedSet.size > 0 && targetedReoptSize > 0) {
+      const forcedSet = new Set(Object.keys(forcedStarts));
+      const unplacedIds = Array.from(unplacedSet);
+      shuffleInPlace(unplacedIds);
+
+      const attemptTargetedReopt = (L: LessonItem, sizeOverride?: number) => {
+        if (L.kind === "meeting") return false;
+        const related: LessonItem[] = [];
+        for (const [pid] of assignment.entries()) {
+          const P = lessonById.get(pid);
+          if (!P || P.kind === "meeting") continue;
+          if (forcedSet.has(P.id)) continue;
+          const sameClass = P.claseId === L.claseId;
+          const sameTeacher = P.docenteId && L.docenteId && P.docenteId === L.docenteId;
+          if (sameClass || sameTeacher) related.push(P);
+        }
+        related.sort((a, b) => lessonPriority(a) - lessonPriority(b));
+        const reoptSize = Math.max(1, sizeOverride ?? targetedReoptSize);
+        const toReopt = [L, ...related.slice(0, Math.max(0, reoptSize - 1))];
+        const backup: Array<{ lesson: LessonItem; start: number }> = [];
+
+        for (const R of toReopt) {
+          const start = assignment.get(R.id);
+          if (start === undefined) continue;
+          unplaceLesson(R, start);
+          assignment.delete(R.id);
+          backup.push({ lesson: R, start });
+          unplacedSet.add(R.id);
+        }
+
+        let localBacktracks = 0;
+        const remaining = toReopt.filter((R) => R.kind !== "meeting");
+
+        function localSelectMRV(list: LessonItem[]) {
+          let bestIdx = -1;
+          let bestCount = Number.POSITIVE_INFINITY;
+          let bestValid: number[] = [];
+          for (let i = 0; i < list.length; i++) {
+            const Lc = list[i];
+            const valid = getValidStarts(Lc);
+            if (valid.length === 0) return { idx: i, valid, deadEnd: true };
+            if (valid.length < bestCount) {
+              bestCount = valid.length;
+              bestIdx = i;
+              bestValid = valid;
+            }
+          }
+          return { idx: bestIdx, valid: bestValid, deadEnd: false };
+        }
+
+        function localDfs(list: LessonItem[]): boolean {
+          if (Date.now() - startTime > timeLimitMs) return false;
+          if (list.length === 0) return true;
+          if (localBacktracks > 4000) return false;
+
+          const { idx, valid, deadEnd } = localSelectMRV(list);
+          if (deadEnd || idx < 0) return false;
+          const current = list[idx];
+          const ordered = orderByLCV(current, valid, list);
+          list.splice(idx, 1);
+
+          for (const start of ordered) {
+            if (!canPlaceLesson(current, start)) continue;
+            placeLesson(current, start);
+            assignment.set(current.id, start);
+            if (localDfs(list)) return true;
+            assignment.delete(current.id);
+            unplaceLesson(current, start);
+            localBacktracks++;
+            if (localBacktracks > 4000) break;
+          }
+          list.splice(idx, 0, current);
+          return false;
+        }
+
+        const solvedLocal = localDfs([...remaining]);
+        if (solvedLocal) {
+          for (const R of remaining) unplacedSet.delete(R.id);
+          return true;
+        }
+
+        for (const r of backup) {
+          if (assignment.has(r.lesson.id)) continue;
+          if (!canPlaceLesson(r.lesson, r.start)) continue;
+          placeLesson(r.lesson, r.start);
+          assignment.set(r.lesson.id, r.start);
+          unplacedSet.delete(r.lesson.id);
+        }
+        return false;
+      };
+
+      for (let attempt = 0; attempt < targetedReoptMaxAttempts; attempt++) {
+        if (unplacedSet.size === 0) break;
+        for (const lid of unplacedIds) {
+          if (attemptTargetedReopt(lessonById.get(lid)!)) break;
+        }
+      }
+      if (unplacedSet.size > 0 && unplacedSet.size <= 10) {
+        const finalReoptSize = Math.max(targetedReoptSize, 12);
+        for (const lid of Array.from(unplacedSet)) {
+          if (attemptTargetedReopt(lessonById.get(lid)!, finalReoptSize)) break;
+        }
+      }
     }
     bestAssignment = assignment;
   }
 
+  const splitReport: Array<{
+    lessonId: string;
+    cargaId: string;
+    claseId: string;
+    asignaturaId: string;
+    docenteId: string | null;
+    originalDuracion: number;
+    splitSlots: Array<{ slot: number; day: number; period: number }>;
+  }> = [];
+  const splitPlaced = new Set<string>();
+
+  if (bestAssignment) {
+    for (const L of lessons) {
+      if (L.kind === "meeting") continue;
+      if (bestAssignment.has(L.id)) continue;
+      if (L.duracion !== 2) continue;
+      const validStarts = getValidStarts(L);
+      if (validStarts.length > 0) continue;
+
+      const subjectKey = subjectKeyForLesson(L);
+      const availableSlots: number[] = [];
+      for (let idx = 0; idx < totalSlots; idx++) {
+        if (!inBounds(idx)) continue;
+        const period = idx % slotsPerDay;
+        if (period >= slotsPerDay) continue;
+        const day = dayOfSlot(idx);
+        if (subjectKey) {
+          const used = subjectDayCount[subjectKey]?.[day] ?? 0;
+          if (used + 1 > subjectMaxDailySlots) continue;
+        }
+        const classArr = classOcc[L.claseId];
+        if (classArr && classArr[idx]) continue;
+        const teacherIdsForLesson = L.docenteId ? [L.docenteId] : [];
+        let blocked = false;
+        for (const tid of teacherIdsForLesson) {
+          const blockedArr = teacherBlockedSlots[tid];
+          if (blockedArr && blockedArr[idx]) {
+            blocked = true;
+            break;
+          }
+          const tArr = teacherOcc[tid];
+          if (tArr && tArr[idx]) {
+            blocked = true;
+            break;
+          }
+        }
+        if (!blocked) availableSlots.push(idx);
+      }
+
+      const slotsByDay = new Map<number, number[]>();
+      for (const idx of availableSlots) {
+        const day = dayOfSlot(idx);
+        if (!slotsByDay.has(day)) slotsByDay.set(day, []);
+        slotsByDay.get(day)!.push(idx);
+      }
+      const slotCandidates = Array.from(slotsByDay.entries())
+        .flatMap(([day, slots]) => slots.map((slot) => ({ day, slot })))
+        .sort((a, b) => a.slot - b.slot);
+      if (slotCandidates.length < 2) continue;
+      const chosen: number[] = [];
+      const dayUsage = new Map<number, number>();
+      for (const candidate of slotCandidates) {
+        const used = dayUsage.get(candidate.day) ?? 0;
+        const baseUsed = subjectKey ? (subjectDayCount[subjectKey]?.[candidate.day] ?? 0) : 0;
+        if (baseUsed + used + 1 > subjectMaxDailySlots) continue;
+        chosen.push(candidate.slot);
+        dayUsage.set(candidate.day, used + 1);
+        if (chosen.length >= 2) break;
+      }
+      if (chosen.length < 2) continue;
+
+      const splitSlots: Array<{ slot: number; day: number; period: number }> = [];
+      for (const idx of chosen.slice(0, 2)) {
+        const day = dayOfSlot(idx);
+        const period = idx % slotsPerDay;
+        classOcc[L.claseId][idx] = true;
+        timetableByClase[L.claseId][idx] = {
+          cargaId: L.cargaId,
+          asignaturaId: L.asignaturaId,
+          docenteId: L.docenteId ?? null,
+          claseId: L.claseId,
+          duracion: 1,
+        };
+        if (L.docenteId) {
+          teacherOcc[L.docenteId][idx] = true;
+        }
+        if (subjectKey) {
+          subjectDayCount[subjectKey][day] = (subjectDayCount[subjectKey]?.[day] ?? 0) + 1;
+        }
+        splitSlots.push({ slot: idx, day, period });
+      }
+      splitPlaced.add(L.id);
+      splitReport.push({
+        lessonId: L.id,
+        cargaId: L.cargaId,
+        claseId: L.claseId,
+        asignaturaId: L.asignaturaId,
+        docenteId: L.docenteId ?? null,
+        originalDuracion: L.duracion,
+        splitSlots,
+      });
+    }
+  }
+
   const assignedSlotsTotal = Object.values(timetableByClase).reduce((acc, arr) => acc + arr.filter(Boolean).length, 0);
-  const assignedLessonsCount = bestAssignment ? bestAssignment.size : 0;
-  const unplaced = lessons.filter(L => !bestAssignment?.has(L.id)).map(L => L.id);
+  const assignedLessonsCount = bestAssignment ? bestAssignment.size + splitPlaced.size : splitPlaced.size;
+  const unplaced = lessons.filter(L => !bestAssignment?.has(L.id) && !splitPlaced.has(L.id)).map(L => L.id);
+  const unplacedByClass = new Map<string, number>();
+  for (const lid of unplaced) {
+    const L = lessonById.get(lid);
+    if (!L) continue;
+    unplacedByClass.set(L.claseId, (unplacedByClass.get(L.claseId) ?? 0) + 1);
+  }
+  const saturatedClasses = Object.entries(timetableByClase)
+    .map(([claseId, slots]) => {
+      const assignedSlots = slots.filter(Boolean).length;
+      const pendingCount = unplacedByClass.get(claseId) ?? 0;
+      return {
+        claseId,
+        assignedSlots,
+        capacity: totalSlots,
+        pendingCount,
+      };
+    })
+    .filter((entry) => entry.pendingCount > 0 && entry.assignedSlots >= entry.capacity);
+  const unplacedCandidates = unplaced
+    .map((lid) => {
+      const L = lessonById.get(lid);
+      if (!L || L.kind === "meeting") return null;
+      const domain = baseDomains.get(L.id) ?? [];
+      const candidates: number[] = [];
+      let count = 0;
+      for (const start of domain) {
+        if (canPlaceLesson(L, start)) {
+          count++;
+          if (candidates.length < candidateSampleLimit) candidates.push(start);
+        }
+      }
+      return {
+        lessonId: L.id,
+        cargaId: L.cargaId,
+        claseId: L.claseId,
+        asignaturaId: L.asignaturaId,
+        docenteId: L.docenteId ?? null,
+        duracion: L.duracion,
+        candidateCount: count,
+        candidateSlots: candidates,
+      };
+    })
+    .filter(Boolean);
+  const unplacedBreakdown = unplaced
+    .map((lid) => {
+      const L = lessonById.get(lid);
+      if (!L || L.kind === "meeting") return null;
+      const domain = baseDomains.get(L.id) ?? [];
+      const summary = {
+        lessonId: L.id,
+        cargaId: L.cargaId,
+        claseId: L.claseId,
+        asignaturaId: L.asignaturaId,
+        docenteId: L.docenteId ?? null,
+        duracion: L.duracion,
+        totalStarts: domain.length,
+        freeStarts: 0,
+        outOfBounds: 0,
+        subjectDayConflict: 0,
+        meetingDayConflict: 0,
+        classConflict: 0,
+        teacherBlocked: 0,
+        teacherConflict: 0,
+      };
+      for (const start of domain) {
+        if (!inBounds(start)) {
+          summary.outOfBounds += 1;
+          continue;
+        }
+        const day = dayOfSlot(start);
+        const period = start % slotsPerDay;
+        if (period + L.duracion > slotsPerDay) {
+          summary.outOfBounds += 1;
+          continue;
+        }
+        const subjectKey = subjectKeyForLesson(L);
+        if (L.kind !== "meeting" && subjectKey) {
+          const used = subjectDayCount[subjectKey]?.[day] ?? 0;
+          if (used + L.duracion > subjectMaxDailySlots) {
+          summary.subjectDayConflict += 1;
+          continue;
+          }
+        }
+        if (L.kind === "meeting" && meetingDayCount[day] >= meetingMaxPerDay) {
+          summary.meetingDayConflict += 1;
+          continue;
+        }
+        let blocked = false;
+        for (let p = 0; p < L.duracion; p++) {
+          const idx = start + p;
+          if (!inBounds(idx)) {
+            summary.outOfBounds += 1;
+            blocked = true;
+            break;
+          }
+          if (L.kind !== "meeting") {
+            const classArr = classOcc[L.claseId];
+            if (classArr && classArr[idx]) {
+              summary.classConflict += 1;
+              blocked = true;
+              break;
+            }
+          }
+          const teacherIdsForLesson = L.kind === "meeting"
+            ? (L.meetingTeachers ?? [])
+            : (L.docenteId ? [L.docenteId] : []);
+          for (const tid of teacherIdsForLesson) {
+            const blockedArr = teacherBlockedSlots[tid];
+            if (blockedArr && blockedArr[idx]) {
+              summary.teacherBlocked += 1;
+              blocked = true;
+              break;
+            }
+            const tArr = teacherOcc[tid];
+            if (tArr && tArr[idx]) {
+              summary.teacherConflict += 1;
+              blocked = true;
+              break;
+            }
+          }
+          if (blocked) break;
+        }
+        if (!blocked) summary.freeStarts += 1;
+      }
+      return summary;
+    })
+    .filter(Boolean);
   const meetingAssignments = lessons
     .filter((L) => L.kind === "meeting")
     .map((L) => {
@@ -760,6 +1202,11 @@ export function generateTimetable(
       classCapacity,
       forcedStarts,
       meetingAssignments,
+      unplacedCandidates,
+      unplacedBreakdown,
+      splitReport,
+      saturatedClasses,
+      subjectsExceedAvailableDays,
     },
   };
 }

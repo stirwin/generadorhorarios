@@ -108,7 +108,7 @@ export function ImportadorExcel({
       onPreviewLoaded?.(p);
       toast.success("Previsualización lista", { description: "Revise y edite si es necesario antes de guardar." });
     } catch (err) {
-      console.error(err);
+      // noop: mantener consola limpia
       setErrors(["Error de red al subir el archivo"]);
       toast.error("Error de red", { description: "No se pudo conectar al servidor." });
     } finally {
@@ -141,7 +141,7 @@ export function ImportadorExcel({
       setPreviewSaved(true);
       onPersisted?.(editedPreview);
     } catch (err) {
-      console.error(err);
+      // noop: mantener consola limpia
       toast.error("Error de red", { description: "No se pudo persistir la importación." });
     } finally {
       setLoading(false);

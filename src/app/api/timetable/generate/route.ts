@@ -95,10 +95,15 @@ export async function POST(req: Request) {
     const lessonById = new Map<string, LessonItem>(lessons.map((l) => [l.id, l]));
     // Restriccion: director de grupo siempre lunes primera hora con su clase (si está activada)
     const forcedStarts: Record<string, number> = {};
+    const forcedStartOptions: Record<string, number[]> = {};
     const forcedLabels: Record<string, string> = {};
     const forcedConflicts: Array<{ docenteId: string; claseId: string; reason: string }> = [];
     const mondayStart = 0;
     const applyDirectorRule = institucion.director_lunes_primera !== false;
+    const directorWindowMode = body?.directorWindowMode ?? "full-day";
+    const directorFallbackAnyDay = body?.directorFallbackAnyDay ?? true;
+    const directorFallbacks: Array<{ docenteId: string; claseId: string; reason: string }> = [];
+    const forcedByClass = new Set<string>();
 
     const directorMap = new Map<string, string>();
     for (const d of docentes) {
@@ -112,6 +117,10 @@ export async function POST(req: Request) {
           forcedConflicts.push({ docenteId, claseId, reason: "sin lecciones del docente en su grupo" });
           continue;
         }
+        if (forcedByClass.has(claseId)) {
+          forcedConflicts.push({ docenteId, claseId, reason: "clase ya tiene una leccion forzada" });
+          continue;
+        }
         const withOneSlot = candidates.filter((c) => c.duracion === 1);
         const withTwoSlots = candidates.filter((c) => c.duracion >= 2);
         const chosen = (withOneSlot.length > 0
@@ -119,20 +128,60 @@ export async function POST(req: Request) {
           : (withTwoSlots.length > 0 ? withTwoSlots[0] : candidates.slice().sort((a, b) => a.duracion - b.duracion)[0]));
         const blocked = teacherBlockedSlots[docenteId];
         const requiredSlots = chosen.duracion;
-        let blockedConflict = false;
-        for (let p = 0; p < requiredSlots; p++) {
-          const idx = mondayStart + p;
-          if (blocked && blocked[idx]) {
-            blockedConflict = true;
-            break;
+        const maxStartOffset = Math.max(0, slotsPerDay - requiredSlots);
+        const mondayOffsets = Array.from({ length: maxStartOffset + 1 }, (_, i) => i);
+        const limitedOffsets = directorWindowMode === "first-two"
+          ? mondayOffsets.filter((i) => i <= 1)
+          : mondayOffsets;
+        const mondayStarts = limitedOffsets.map((i) => mondayStart + i);
+        let allowedStarts = mondayStarts.filter((start) => {
+          for (let p = 0; p < requiredSlots; p++) {
+            const idx = start + p;
+            if (blocked && blocked[idx]) return false;
+          }
+          return true;
+        });
+        if (allowedStarts.length === 0 && directorFallbackAnyDay) {
+          const weekStarts: number[] = [];
+          for (let d = 0; d < days; d++) {
+            for (let p = 0; p <= slotsPerDay - requiredSlots; p++) {
+              const start = d * slotsPerDay + p;
+              let blockedAny = false;
+              for (let k = 0; k < requiredSlots; k++) {
+                const idx = start + k;
+                if (blocked && blocked[idx]) {
+                  blockedAny = true;
+                  break;
+                }
+              }
+              if (!blockedAny) weekStarts.push(start);
+            }
+          }
+          allowedStarts = weekStarts;
+          if (allowedStarts.length > 0) {
+            directorFallbacks.push({ docenteId, claseId, reason: "sin lunes disponible, se amplio a semana" });
           }
         }
-        if (blockedConflict) {
-          forcedConflicts.push({ docenteId, claseId, reason: "slot lunes 1 bloqueado por restricciones" });
+        if (allowedStarts.length === 0) {
+          const reason = directorWindowMode === "first-two"
+            ? "slot lunes 1-2 bloqueado por restricciones"
+            : "sin slot disponible el lunes";
+          forcedConflicts.push({ docenteId, claseId, reason });
           continue;
         }
-        forcedStarts[chosen.id] = mondayStart;
-        forcedLabels[chosen.id] = requiredSlots >= 2 ? "Dir. grupo (Lun 1-2)" : "Dir. grupo (Lun 1ra)";
+        if (allowedStarts.length === 1) {
+          forcedStarts[chosen.id] = allowedStarts[0];
+        } else {
+          forcedStartOptions[chosen.id] = allowedStarts;
+        }
+        if (directorFallbacks.some((f) => f.docenteId === docenteId && f.claseId === claseId)) {
+          forcedLabels[chosen.id] = "Dir. grupo (flex)";
+        } else if (directorWindowMode === "first-two") {
+          forcedLabels[chosen.id] = requiredSlots >= 2 ? "Dir. grupo (Lun 1-2)" : "Dir. grupo (Lun 1ra/2da)";
+        } else {
+          forcedLabels[chosen.id] = "Dir. grupo (Lun)";
+        }
+        forcedByClass.add(claseId);
       }
     }
 
@@ -255,34 +304,44 @@ export async function POST(req: Request) {
       docenteId: string;
       docenteNombre: string;
       asignatura: string;
-      sesiones: number;
+      slotsNeeded: number;
+      maxSlots: number;
+      maxDailySlots: number;
       diasDisponibles: number;
+      claseId?: string;
+      claseNombre?: string;
     }> = [];
 
     const claseNameById = new Map<string, string>();
     for (const c of cargas) {
       if (c.claseId && c.clase?.nombre) claseNameById.set(c.claseId, c.clase.nombre);
     }
-    const teacherSubjectSessions = new Map<string, number>();
+    const teacherSubjectSlots = new Map<string, number>();
     for (const c of cargas) {
       if (!c.docenteId) continue;
       const key = `${c.docenteId}::${c.claseId}::${c.asignatura?.nombre ?? c.asignaturaId}`;
       const sesiones = Number((c as any).sesiones_sem ?? 0) || 0;
-      teacherSubjectSessions.set(key, (teacherSubjectSessions.get(key) ?? 0) + sesiones);
+      const duracion = Number((c as any).duracion_slots ?? 1) || 1;
+      const slotsNeeded = sesiones * duracion;
+      teacherSubjectSlots.set(key, (teacherSubjectSlots.get(key) ?? 0) + slotsNeeded);
     }
-    for (const [key, sesiones] of teacherSubjectSessions.entries()) {
+    for (const [key, slotsNeeded] of teacherSubjectSlots.entries()) {
       const parts = key.split("::");
       const docenteId = parts[0];
       const claseId = parts[1];
       const asignatura = parts.slice(2).join("::");
       const diasDisponibles = teacherDayAvailability[docenteId] ?? days;
-      if (sesiones > diasDisponibles) {
+      const maxDailySlots = 2;
+      const maxSlots = diasDisponibles * maxDailySlots;
+      if (slotsNeeded > maxSlots) {
         const docenteNombre = docentes.find((d) => d.id === docenteId)?.nombre ?? docenteId;
         subjectDayConflicts.push({
           docenteId,
           docenteNombre,
           asignatura,
-          sesiones,
+          slotsNeeded,
+          maxSlots,
+          maxDailySlots,
           diasDisponibles,
           claseId,
           claseNombre: claseNameById.get(claseId) ?? claseId,
@@ -291,8 +350,7 @@ export async function POST(req: Request) {
     }
 
     if (teacherConflicts.length > 0 || subjectDayConflicts.length > 0) {
-      console.warn("generateTimetable: teacher conflicts", teacherConflicts);
-      console.warn("generateTimetable: subject/day conflicts", subjectDayConflicts);
+      // noop: mantener consola limpia
       return NextResponse.json({
         error: "Restricciones imposibles con la disponibilidad docente.",
         teacherConflicts,
@@ -360,20 +418,74 @@ export async function POST(req: Request) {
 
     const meetingMaxPerDay = Math.max(1, Math.ceil(meetingLessons.length / Math.max(1, days)));
 
-    // Ejecutar generador: habilita relaxTeacherConstraints si lo pasas en body (opcional)
-    const result = generateTimetable(institucionId, cls, lessons, days, slotsPerDay, {
+    // Ejecutar generador: microservicio CP-SAT si existe URL, heuristico local si no
+    const solverUrl = process.env.TIMETABLER_SOLVER_URL;
+    const solverOptions = {
       maxBacktracks: Number(body?.maxBacktracks) || 1200000,
       timeLimitMs: Number(body?.timeLimitMs) || 120000,
       maxRestarts: Number(body?.maxRestarts) || 30,
       repairIterations: Number(body?.repairIterations) || 300,
       repairSampleSize: Number(body?.repairSampleSize) || 6,
+      repairMaxConflicts: Number(body?.repairMaxConflicts) || 4,
+      repairCandidateStarts: Number(body?.repairCandidateStarts) || 40,
+      targetedReoptSize: Number(body?.targetedReoptSize) || 8,
+      targetedReoptMaxAttempts: Number(body?.targetedReoptMaxAttempts) || 2,
       teacherBlockedSlots,
       forcedStarts,
+      forcedStartOptions,
       forcedLabels,
       meetingMaxPerDay,
+      subjectMaxDailySlots: Number(body?.subjectMaxDailySlots) || 2,
       priorityLessonIds: Array.isArray(body?.priorityLessonIds) ? body.priorityLessonIds : undefined,
       priorityTeacherIds: Array.isArray(body?.priorityTeacherIds) ? body.priorityTeacherIds : undefined,
-    });
+    };
+    let result;
+    if (solverUrl) {
+      const payload = {
+        days,
+        slotsPerDay,
+        classes: cls,
+        lessons,
+        teacherBlockedSlots,
+        forcedStarts,
+        forcedStartOptions,
+        meetingMaxPerDay,
+        subjectMaxDailySlots: Number(body?.subjectMaxDailySlots) || 2,
+      };
+      const resp = await fetch(solverUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ payload }),
+      });
+      const solverData = await resp.json();
+      if (!resp.ok || !solverData?.ok) {
+        return NextResponse.json({
+          error: solverData?.error ?? "Solver remoto fallo.",
+          solver: "python",
+          teacherConflicts: solverData?.teacherConflicts ?? [],
+          subjectDayConflicts: solverData?.subjectDayConflicts ?? [],
+          tightLessons: solverData?.tightLessons ?? [],
+          tightLessonsBreakdown: solverData?.tightLessonsBreakdown ?? [],
+          solverData,
+        }, { status: 400 });
+      }
+      result = {
+        timetableByClase: solverData.timetable ?? {},
+        success: Array.isArray(solverData?.unplaced) ? solverData.unplaced.length === 0 : true,
+        unplaced: solverData.unplaced ?? [],
+        stats: solverData.stats ?? {
+          lessonsTotal: lessons.length,
+          assigned: lessons.length,
+          assignedSlots: 0,
+          greedyAssigned: 0,
+          backtracks: 0,
+          timeMs: 0,
+        },
+        meta: solverData.debug ?? {},
+      };
+    } else {
+      result = generateTimetable(institucionId, cls, lessons, days, slotsPerDay, solverOptions);
+    }
 
     const meetingAssignmentMap = new Map<string, number>();
     const rawMeetingAssignments = Array.isArray(result.meta?.meetingAssignments) ? result.meta.meetingAssignments : [];
@@ -420,7 +532,7 @@ export async function POST(req: Request) {
           docenteNombre: cm?.docenteNombre ?? cell.docenteId ?? null,
           claseId: claseId,
           claseNombre: claseNameMap.get(claseId)?.nombre ?? (cell as any)?.claseNombre ?? claseId,
-          duracion: cm?.duracion ?? cell.duracion ?? 1,
+          duracion: cell.duracion ?? cm?.duracion ?? 1,
         };
       });
     }
@@ -471,6 +583,13 @@ export async function POST(req: Request) {
       unplaced,
       unplacedDetails,
       unplacedInfo,
+      unplacedCandidates: Array.isArray(result.meta?.unplacedCandidates) ? result.meta.unplacedCandidates : [],
+      unplacedBreakdown: Array.isArray(result.meta?.unplacedBreakdown) ? result.meta.unplacedBreakdown : [],
+      splitReport: Array.isArray(result.meta?.splitReport) ? result.meta.splitReport : [],
+      saturatedClasses: Array.isArray(result.meta?.saturatedClasses) ? result.meta.saturatedClasses : [],
+      subjectsExceedAvailableDays: Array.isArray(result.meta?.subjectsExceedAvailableDays)
+        ? result.meta.subjectsExceedAvailableDays
+        : [],
       lessonsTotal: lessons.length - meetingLessons.length,
       assignedLessonsCount: assignedLessonIds.size,
       cargasTotal: cargas.length,
@@ -480,22 +599,25 @@ export async function POST(req: Request) {
       forcedDirector: {
         forcedCount: Object.keys(forcedStarts).length,
         conflicts: forcedConflicts,
+        fallbacks: directorFallbacks,
       },
       areaMeetings: {
         assigned: meetingAssignments,
         conflicts: meetingConflicts,
       },
+      solver: solverUrl ? "python" : "local",
     };
 
     return NextResponse.json({
       timetable: normalized,
       stats: adjustedStats,
       unplaced,
+      solver: solverUrl ? "python" : "local",
       debug: debugPayload,
     }, { status: 200 });
 
   } catch (err: any) {
-    console.error("generate timetable error:", err);
+    // noop: mantener consola limpia
     return NextResponse.json({ error: err.message || String(err) }, { status: 500 });
   }
 }

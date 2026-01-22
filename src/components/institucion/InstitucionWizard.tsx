@@ -102,7 +102,7 @@ export default function InstitucionWizard() {
         return mapped.find((i) => i.id === prev.id) ?? mapped[0] ?? null;
       });
     } catch (err) {
-      console.error("fetchInstituciones error:", err);
+      // noop: mantener consola limpia
     }
   }
 
@@ -136,7 +136,7 @@ export default function InstitucionWizard() {
         }
       }
     } catch (err) {
-      console.warn("fetchLatestHorario error:", err);
+      // noop: mantener consola limpia
     }
   }
 
@@ -230,7 +230,7 @@ export default function InstitucionWizard() {
 
       return nueva;
     } catch (err: any) {
-      console.error("crearInstitucionServidor error ->", err);
+      // noop: mantener consola limpia
       alert("No se pudo crear la institución: " + (err.message || "Error desconocido"));
       return null;
     }
@@ -252,6 +252,10 @@ export default function InstitucionWizard() {
           institucionId: institucionSeleccionada.id,
           repairIterations: 1200,
           repairSampleSize: 12,
+          repairMaxConflicts: 4,
+          repairCandidateStarts: 40,
+          targetedReoptSize: 8,
+          targetedReoptMaxAttempts: 2,
           priorityLessonIds: lastUnplacedIds.length > 0 ? lastUnplacedIds : undefined,
           priorityTeacherIds: lastUnplacedTeacherIds.length > 0 ? lastUnplacedTeacherIds : undefined,
         }),
@@ -264,7 +268,7 @@ export default function InstitucionWizard() {
         try {
           data = await res.json();
         } catch (jsonErr) {
-          console.warn("res.json() fallo, intentando parsear manualmente:", jsonErr);
+          // noop: mantener consola limpia
           const txt = await res.text();
           try {
             data = JSON.parse(txt);
@@ -314,7 +318,9 @@ export default function InstitucionWizard() {
             .slice(0, 6)
             .map((c: any) => {
               const clase = c.claseNombre ?? c.claseId ?? "";
-              return `${c.docenteNombre ?? c.docenteId} ${c.asignatura} ${clase}: ${c.sesiones} sesiones > ${c.diasDisponibles} dias`;
+              const slotsNeeded = typeof c.slotsNeeded === "number" ? c.slotsNeeded : c.sesiones;
+              const maxSlots = typeof c.maxSlots === "number" ? c.maxSlots : c.diasDisponibles;
+              return `${c.docenteNombre ?? c.docenteId} ${c.asignatura} ${clase}: ${slotsNeeded} slots > ${maxSlots} max`;
             })
             .join(" | ");
           message = `${message} ${details}`;
@@ -332,6 +338,20 @@ export default function InstitucionWizard() {
             })
             .join(", ");
           message = `Carga académica supera la capacidad. ${details}`;
+        }
+        if (
+          Array.isArray((data as any)?.teacherConflicts) ||
+          Array.isArray((data as any)?.subjectDayConflicts) ||
+          Array.isArray((data as any)?.tightLessons) ||
+          Array.isArray((data as any)?.tightLessonsBreakdown)
+        ) {
+          setTimetableMeta({
+            teacherConflicts: Array.isArray((data as any)?.teacherConflicts) ? (data as any).teacherConflicts : [],
+            subjectDayConflicts: Array.isArray((data as any)?.subjectDayConflicts) ? (data as any).subjectDayConflicts : [],
+            tightLessons: Array.isArray((data as any)?.tightLessons) ? (data as any).tightLessons : [],
+            tightLessonsBreakdown: Array.isArray((data as any)?.tightLessonsBreakdown) ? (data as any).tightLessonsBreakdown : [],
+            solver: (data as any).solver ?? null,
+          });
         }
         throw new Error(message);
       }
@@ -369,29 +389,23 @@ export default function InstitucionWizard() {
       if (shouldReplaceTimetable) {
         setTimetableMeta(metaCandidate);
       }
-      console.log("timetable meta (candidate):", metaCandidate);
-
-      const keys = Object.keys(returnedTimetable || {});
-      if (keys.length === 0) {
-        console.warn("generateTimetable: server returned timetable with zero keys", { stats: data?.stats, debug: data?.debug, returned: returnedTimetable });
-      } else {
-        console.log("generateTimetable: timetable keys", keys.slice(0, 50));
-      }
-
+      void metaCandidate;
       if (data?.debug) {
-        console.group("timetable debug");
-        try {
-          const meta = data.debug?.timetablerMeta ?? {};
-          console.log("debug.unplaced (ids):", data.debug?.unplaced || []);
-          console.log("debug.unplacedDetails (first 3):", Object.entries(data.debug?.unplacedDetails || {}).slice(0, 3));
-          console.log("meta.lessonDebug keys (sample):", Object.keys(meta.lessonDebug || {}).slice(0, 20));
-          console.log("meta.teacherOccupancySample (sample):", Object.keys(meta.teacherOccupancySample || {}).slice(0, 20));
-          console.log("meta.teacherSlotDetail (sample for Martha Orozco):", meta.teacherSlotDetail?.['cmjm5ytda001vyykgx2jca3w9'] || []);
-          console.log("meta.classOccupancySample (sample keys):", Object.keys(meta.classOccupancySample || {}).slice(0, 20));
-        } catch (e) {
-          console.warn("Error mostrando debug:", e);
+        const unplacedIds = Array.isArray(data.debug?.unplaced) ? data.debug.unplaced : [];
+        const cargaIds = Array.from(
+          new Set(
+            unplacedIds
+              .map((id: any) => String(id).split("__")[0])
+              .filter((id: string) => id.length > 0)
+          )
+        );
+        if (cargaIds.length > 0) {
+          await fetch("/api/debug/cargas", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ids: cargaIds }),
+          });
         }
-        console.groupEnd();
       }
       if (nextAssigned !== null && (bestAssignedCount === null || nextAssigned > bestAssignedCount)) {
         setBestAssignedCount(nextAssigned);
@@ -401,7 +415,7 @@ export default function InstitucionWizard() {
       }
       alert("Horario generado correctamente.");
     } catch (err: any) {
-      console.error("handleGenerateTimetable error:", err);
+      // noop: mantener consola limpia
       alert("No se pudo generar el horario: " + (err?.message ?? String(err)));
     } finally {
       setLoadingTimetable(false);
@@ -443,7 +457,7 @@ export default function InstitucionWizard() {
       setHorarioCreatedAt(typeof data?.createdAt === "string" ? data.createdAt : null);
       alert("Horario guardado correctamente.");
     } catch (err: any) {
-      console.error("handleSaveTimetable error:", err);
+      // noop: mantener consola limpia
       alert("No se pudo guardar el horario: " + (err?.message ?? String(err)));
     } finally {
       setLoadingTimetable(false);
