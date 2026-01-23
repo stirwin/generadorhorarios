@@ -2,7 +2,7 @@
 "use client";
 
 import React, { useMemo, useState } from "react";
-import { Save, Download, Eye } from "lucide-react";
+import { Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -31,17 +31,13 @@ interface Props {
   /**
    * Opcionales: callbacks para acciones de UI
    */
-  onPreview?: (classId: string) => void;
   onExport?: (classId: string) => void;
-  onSave?: (classId: string, timetable?: Record<string, Array<TimetableCell | null>>) => void;
 }
 
 export default function VistaSemanalHorario({
   institucion,
   timetableByClase,
-  onPreview,
   onExport,
-  onSave,
 }: Props) {
   // Seguridad: si no hay institución, no renderizamos nada (ya lo maneja el nivel superior)
   if (!institucion) return null;
@@ -162,22 +158,9 @@ export default function VistaSemanalHorario({
   }
 
   // acciones
-  const handlePreview = () => {
-    if (!selectedClassId) return;
-    onPreview?.(selectedClassId);
-  };
   const handleExport = () => {
     if (!selectedClassId) return;
     onExport?.(selectedClassId);
-  };
-  const handleSave = () => {
-    if (!selectedClassId) return;
-    const normalized: Record<string, Array<TimetableCell | null>> = {};
-    const table = timetableByClase ?? {};
-    for (const [key, arr] of Object.entries(table)) {
-      normalized[key] = Array.isArray(arr) ? arr : [];
-    }
-    onSave?.(selectedClassId, Object.keys(normalized).length ? normalized : undefined);
   };
 
   return (
@@ -203,14 +186,8 @@ export default function VistaSemanalHorario({
             </div>
 
             <div className="flex gap-2">
-              <Button variant="outline" onClick={handlePreview}>
-                <Eye className="w-4 h-4 mr-2" /> Vista previa
-              </Button>
               <Button variant="outline" onClick={handleExport}>
                 <Download className="w-4 h-4 mr-2" /> Exportar
-              </Button>
-              <Button onClick={handleSave}>
-                <Save className="w-4 h-4 mr-2" /> Guardar
               </Button>
             </div>
           </div>
@@ -224,7 +201,11 @@ export default function VistaSemanalHorario({
 
           <CardContent>
             <div className="overflow-x-auto">
-              <table className="w-full border-collapse">
+              <table className="w-full border-collapse table-fixed">
+                <colgroup>
+                  <col className="w-28" />
+                  <col span={dias} />
+                </colgroup>
                 <thead>
                   <tr>
                     <th className="border p-2 bg-muted text-left font-semibold w-28" style={{ height: headerHeightPx }}>Hora</th>
@@ -241,7 +222,7 @@ export default function VistaSemanalHorario({
                     return (
                       <tr key={`row-${slotInDay}`} style={{ height: rowHeightPx }}>
                         {/* etiqueta de hora (fila) */}
-                        <td className="border p-2 font-medium bg-muted/50 text-sm">{horaLabels[slotInDay] ?? `Slot ${slotInDay + 1}`}</td>
+                        <td className="border p-2 font-medium bg-muted/50 text-sm w-28">{horaLabels[slotInDay] ?? `Slot ${slotInDay + 1}`}</td>
 
                         {Array.from({ length: dias }).map((_, dayIdx) => {
                           const slotIdx = dayIdx * lecciones + slotInDay;
@@ -288,9 +269,17 @@ export default function VistaSemanalHorario({
                             return colors[Math.abs(h) % colors.length];
                           })();
 
+                          const displayRowSpan = Math.min(rowSpan, topSlotCount - slotInDay);
+                          const cellHeight = rowHeightPx * displayRowSpan;
+
                           return (
-                            <td key={`c-${slotIdx}`} rowSpan={Math.min(rowSpan, topSlotCount - slotInDay)} className="border p-2 align-top">
-                              <div className={`${colorClass} text-white p-2 rounded-lg cursor-pointer`}>
+                            <td
+                              key={`c-${slotIdx}`}
+                              rowSpan={displayRowSpan}
+                              className="border align-top p-2"
+                              style={{ height: `${cellHeight}px` }}
+                            >
+                              <div className={`${colorClass} text-white p-3 rounded-lg cursor-pointer h-full w-full flex flex-col justify-between`}>
                                 <div className="font-semibold text-sm truncate">{asignatura}</div>
                                 <div className="text-xs opacity-90 mt-1 truncate">{docente}</div>
                                 {crossesBreak && (
@@ -320,7 +309,11 @@ export default function VistaSemanalHorario({
                 </div>
               </div>
 
-              <table className="w-full border-collapse">
+              <table className="w-full border-collapse table-fixed">
+                <colgroup>
+                  <col className="w-28" />
+                  <col span={dias} />
+                </colgroup>
                 <tbody>
                   {Array.from({ length: lecciones - bottomSlotStart }).map((_, offset) => {
                     const slotInDay = bottomSlotStart + offset;
@@ -367,9 +360,17 @@ export default function VistaSemanalHorario({
                             return colors[Math.abs(h) % colors.length];
                           })();
 
+                          const displayRowSpan = Math.min(rowSpan, lecciones - slotInDay);
+                          const cellHeight = rowHeightPx * displayRowSpan;
+
                           return (
-                            <td key={`c-b-${slotIdx}`} rowSpan={Math.min(rowSpan, lecciones - slotInDay)} className="border p-2 align-top">
-                              <div className={`${colorClass} text-white p-2 rounded-lg cursor-pointer`}>
+                            <td
+                              key={`c-b-${slotIdx}`}
+                              rowSpan={displayRowSpan}
+                              className="border align-top p-2"
+                              style={{ height: `${cellHeight}px` }}
+                            >
+                              <div className={`${colorClass} text-white p-3 rounded-lg cursor-pointer h-full w-full flex flex-col justify-between`}>
                                 <div className="font-semibold text-sm truncate">{asignatura}</div>
                                 <div className="text-xs opacity-90 mt-1 truncate">{docente}</div>
                                 {crossesBreak && (

@@ -8,6 +8,8 @@ import { Agent } from "undici";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
+type UndiciRequestInit = RequestInit & { dispatcher?: Agent };
+
 const stableStringify = (value: unknown): string => {
   if (value === null || value === undefined) return "null";
   if (typeof value !== "object") return JSON.stringify(value);
@@ -130,7 +132,7 @@ export async function POST(req: Request) {
     const directorsApplied: Array<{ docenteId: string; claseId: string; lessonId: string; slot: number | null; label: string }> = [];
     const mondayStart = 0;
     const applyDirectorRule = institucion.director_lunes_primera !== false;
-    const directorWindowMode = body?.directorWindowMode ?? "full-day";
+    const directorWindowMode = body?.directorWindowMode ?? "first-two";
     const directorFallbackAnyDay = body?.directorFallbackAnyDay ?? true;
     const directorFallbacks: Array<{ docenteId: string; claseId: string; reason: string }> = [];
     const forcedByClass = new Set<string>();
@@ -155,15 +157,15 @@ export async function POST(req: Request) {
         }
         const withOneSlot = candidates.filter((c) => c.duracion === 1);
         const withTwoSlots = candidates.filter((c) => c.duracion >= 2);
-        const chosen = (withOneSlot.length > 0
-          ? withOneSlot[0]
-          : (withTwoSlots.length > 0 ? withTwoSlots[0] : candidates.slice().sort((a, b) => a.duracion - b.duracion)[0]));
+        const chosen = (withTwoSlots.length > 0
+          ? withTwoSlots[0]
+          : (withOneSlot.length > 0 ? withOneSlot[0] : candidates.slice().sort((a, b) => a.duracion - b.duracion)[0]));
         const blocked = teacherBlockedSlots[docenteId];
         const requiredSlots = chosen.duracion;
         const maxStartOffset = Math.max(0, slotsPerDay - requiredSlots);
         const mondayOffsets = Array.from({ length: maxStartOffset + 1 }, (_, i) => i);
         const limitedOffsets = directorWindowMode === "first-two"
-          ? mondayOffsets.filter((i) => i <= 1)
+          ? [0]
           : mondayOffsets;
         const mondayStarts = limitedOffsets.map((i) => mondayStart + i);
         let allowedStarts = mondayStarts.filter((start) => {
@@ -467,7 +469,7 @@ export async function POST(req: Request) {
         forcedStarts,
         forcedStartOptions,
         lessons: lessons.map((l) => ({
-          lessonId: l.lessonId,
+          lessonId: l.id,
           claseId: l.claseId,
           asignaturaId: l.asignaturaId,
           docenteId: l.docenteId ?? null,
@@ -503,7 +505,7 @@ export async function POST(req: Request) {
           if (dayHasSlot) availableDays.push(d);
         }
         return {
-          lessonId: lesson.lessonId,
+          lessonId: lesson.id,
           cargaId: lesson.cargaId,
           claseId: lesson.claseId,
           asignaturaId: lesson.asignaturaId,
@@ -593,13 +595,14 @@ export async function POST(req: Request) {
       let resp;
       let solverData: any = null;
       try {
-        resp = await fetch(solverUrl, {
+        const fetchInit: UndiciRequestInit = {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ payload }),
           signal: controller.signal,
           dispatcher,
-        });
+        };
+        resp = await fetch(solverUrl, fetchInit);
         solverData = await resp.json();
       } catch (err: any) {
         const timedOut = err?.name === "AbortError";
@@ -688,8 +691,8 @@ export async function POST(req: Request) {
     // Normalizar timetable (añadir nombres para UI)
     const normalized: Record<string, Array<any | null>> = {};
 
-    for (const [claseId, arr] of Object.entries(result.timetableByClase)) {
-      normalized[claseId] = arr.map((cell: any) => {
+    for (const [claseId, arr] of Object.entries(result.timetableByClase as Record<string, any[]>)) {
+      normalized[claseId] = Array.isArray(arr) ? arr.map((cell: any) => {
         if (!cell) return null;
         const cm = cargaMap.get(cell.cargaId) ?? null;
         return {
@@ -702,7 +705,7 @@ export async function POST(req: Request) {
           claseNombre: claseNameMap.get(claseId)?.nombre ?? (cell as any)?.claseNombre ?? claseId,
           duracion: cell.duracion ?? cm?.duracion ?? 1,
         };
-      });
+      }) : [];
     }
 
     const assignedLessonIds = new Set<string>(

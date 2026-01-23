@@ -261,6 +261,7 @@ export default function InstitucionWizard() {
           timeLimitMs: 240000,
           maxRestarts: 4,
           hybridSolve: true,
+          directorWindowMode: "first-two",
           priorityLessonIds: lastUnplacedIds.length > 0 ? lastUnplacedIds : undefined,
           priorityTeacherIds: lastUnplacedTeacherIds.length > 0 ? lastUnplacedTeacherIds : undefined,
           hintTimetable: timetable ?? undefined,

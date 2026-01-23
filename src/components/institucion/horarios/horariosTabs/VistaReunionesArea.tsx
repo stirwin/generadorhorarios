@@ -1,8 +1,10 @@
 "use client";
 
 import { useMemo } from "react";
+import { Download } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Institucion } from "@/types/institucion";
 
 type AreaMeeting = { groupId: string; label: string; slot: number; teachers: string[] };
@@ -10,25 +12,14 @@ type AreaMeeting = { groupId: string; label: string; slot: number; teachers: str
 interface Props {
   institucion: Institucion;
   timetablerMeta?: any;
+  onExport?: () => void;
 }
 
 function buildHourLabels(institucion: Institucion, lecciones: number) {
-  const periodos = institucion.periodos ?? [];
-  if (periodos.length >= lecciones) {
-    return periodos.slice(0, lecciones).map((x: any, idx: number) => {
-      const inicio = x.hora_inicio ?? x.horaInicio;
-      const fin = x.hora_fin ?? x.horaFin;
-      if (inicio && fin) return `${inicio} - ${fin}`;
-      if (inicio) return inicio;
-      if (x.abreviatura) return x.abreviatura;
-      return `Slot ${x.indice ?? idx + 1}`;
-    });
-  }
-  const baseHour = 6;
-  return Array.from({ length: lecciones }, (_, i) => `${String(baseHour + i).padStart(2, "0")}:00`);
+  return Array.from({ length: lecciones }, (_, i) => String(i + 1));
 }
 
-export default function VistaReunionesArea({ institucion, timetablerMeta }: Props) {
+export default function VistaReunionesArea({ institucion, timetablerMeta, onExport }: Props) {
   if (!institucion) return null;
 
   const dias = institucion.dias_por_semana ?? 5;
@@ -58,11 +49,18 @@ export default function VistaReunionesArea({ institucion, timetablerMeta }: Prop
         <Card>
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle>Reuniones por Área</CardTitle>
-            <div className="flex items-center gap-2">
-              <Badge variant="secondary">Asignadas: {assigned.length}</Badge>
-              <Badge variant={conflicts.length ? "destructive" : "secondary"}>
-                Pendientes: {conflicts.length}
-              </Badge>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2">
+                <Badge variant="secondary">Asignadas: {assigned.length}</Badge>
+                <Badge variant={conflicts.length ? "destructive" : "secondary"}>
+                  Pendientes: {conflicts.length}
+                </Badge>
+              </div>
+              {onExport && (
+                <Button variant="outline" onClick={onExport}>
+                  <Download className="w-4 h-4 mr-2" /> Exportar
+                </Button>
+              )}
             </div>
           </CardHeader>
           <CardContent>

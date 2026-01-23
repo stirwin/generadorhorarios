@@ -903,7 +903,7 @@ export default function VistaGeneralHorario({
             <Badge variant="secondary">{teacherConflicts.length}</Badge>
           </div>
           <div className="space-y-3 text-sm">
-            {teacherConflicts.map((row) => (
+            {teacherConflicts.map((row: any) => (
               <div key={row.docenteId} className="rounded-md border bg-background p-3">
                 <div className="font-medium">{row.docenteNombre}</div>
                 <div className="text-muted-foreground">
@@ -938,7 +938,7 @@ export default function VistaGeneralHorario({
             <Badge variant="secondary">{subjectDayConflicts.length}</Badge>
           </div>
           <div className="space-y-3 text-sm">
-            {subjectDayConflicts.map((row) => (
+            {subjectDayConflicts.map((row:any) => (
               <div key={`${row.docenteId}-${row.claseNombre}-${row.asignaturaNombre}`} className="rounded-md border bg-background p-3">
                 <div className="font-medium">{row.docenteNombre}</div>
                 <div className="text-muted-foreground">

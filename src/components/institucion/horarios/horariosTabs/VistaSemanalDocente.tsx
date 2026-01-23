@@ -2,7 +2,7 @@
 "use client";
 
 import React, { useMemo, useState } from "react";
-import { Eye, Download, Save } from "lucide-react";
+import { Download } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -14,28 +14,33 @@ type Teacher = { id: string; nombre: string };
 interface Props {
   institucion: Institucion;
   timetableByClase?: Record<string, Array<TimetableCell | null> | undefined>;
-  onPreview?: (teacherId: string) => void;
+  timetablerMeta?: any;
   onExport?: (teacherId: string) => void;
-  onSave?: (teacherId: string, timetable?: Record<string, Array<TimetableCell | null>>) => void;
 }
 
 export default function VistaSemanalDocente({
   institucion,
   timetableByClase,
-  onPreview,
+  timetablerMeta,
   onExport,
-  onSave,
 }: Props) {
   if (!institucion) return null;
 
   const dias = institucion.dias_por_semana ?? institucion.diasPorSemana ?? 5;
   const lecciones = institucion.lecciones_por_dia ?? institucion.leccionesPorDia ?? 6;
+  const rowHeightPx = 64;
+  const breakAfterIndex = 2;
   const classes = institucion.clases ?? [];
   const classNameById = useMemo(() => {
     const map = new Map<string, string>();
     classes.forEach((c) => map.set(c.id, c.nombre ?? c.abreviatura ?? c.id));
     return map;
   }, [classes]);
+  const teacherNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    (institucion.docentes ?? []).forEach((d) => map.set(d.id, d.nombre ?? d.id));
+    return map;
+  }, [institucion.docentes]);
 
   const normalizedTable = useMemo(() => {
     const out: Record<string, Array<TimetableCell | null>> = {};
@@ -60,8 +65,15 @@ export default function VistaSemanalDocente({
         if (!map.has(id)) map.set(id, nombre);
       }
     }
+    const meetings = (timetablerMeta?.areaMeetings?.assigned ?? []) as Array<{ teachers: string[] }>;
+    for (const meeting of meetings) {
+      for (const id of meeting.teachers ?? []) {
+        const nombre = teacherNameById.get(id) ?? id;
+        if (!map.has(id)) map.set(id, nombre);
+      }
+    }
     return Array.from(map.entries()).map(([id, nombre]) => ({ id, nombre }));
-  }, [timetableByClase]);
+  }, [timetableByClase, timetablerMeta, teacherNameById]);
 
   const [selectedTeacherId, setSelectedTeacherId] = useState<string | undefined>(teachers[0]?.id);
 
@@ -92,8 +104,38 @@ export default function VistaSemanalDocente({
         }
       });
     }
+    const assignedMeetings = (timetablerMeta?.areaMeetings?.assigned ?? []) as Array<{
+      groupId: string;
+      label: string;
+      slot: number;
+      teachers: string[];
+    }>;
+    for (const meeting of assignedMeetings) {
+      if (!meeting.teachers?.includes(selectedTeacherId)) continue;
+      const slotIdx = meeting.slot;
+      if (slotIdx < 0 || slotIdx >= out.length) continue;
+      if (out[slotIdx]) {
+        const existing = out[slotIdx]!;
+        existing.asignaturaNombre = `${existing.asignaturaNombre ?? existing.asignaturaId} / Reunión de área`;
+        if (meeting.label) {
+          existing.claseNombre = `${existing.claseNombre ?? existing.claseId} · ${meeting.label}`;
+        }
+      } else {
+        out[slotIdx] = {
+          cargaId: `meeting::${meeting.groupId}`,
+          lessonId: `meeting::${meeting.groupId}`,
+          asignaturaId: "meeting",
+          asignaturaNombre: "Reunión de área",
+          docenteId: selectedTeacherId,
+          docenteNombre: teacherNameById.get(selectedTeacherId) ?? selectedTeacherId,
+          claseId: `meeting::${meeting.groupId}`,
+          claseNombre: meeting.label ?? "Reunión de área",
+          duracion: 1,
+        };
+      }
+    }
     return out;
-  }, [selectedTeacherId, normalizedTable, dias, lecciones, classNameById]);
+  }, [selectedTeacherId, normalizedTable, dias, lecciones, classNameById, timetablerMeta, teacherNameById]);
 
   // Asignaturas impartidas por el docente (derivadas)
   const asignaturasDelDocente = useMemo(() => {
@@ -115,6 +157,11 @@ export default function VistaSemanalDocente({
 
   const diasNombres = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"].slice(0, dias);
 
+  const getLessonKey = (cell: TimetableCell & { claseNombre?: string } | null) => {
+    if (!cell) return "";
+    return cell.lessonId ?? `${cell.asignaturaNombre ?? cell.asignaturaId}::${cell.claseNombre ?? cell.claseId}`;
+  };
+
   const isContinuation = (slotIdx: number) => {
     const cell = matrix[slotIdx];
     if (!cell) return false;
@@ -122,26 +169,32 @@ export default function VistaSemanalDocente({
     const dayStart = day * lecciones;
     const prevIdx = slotIdx - 1;
     if (prevIdx < dayStart) return false;
+    if (prevIdx === dayStart + breakAfterIndex) return false;
     const prev = matrix[prevIdx];
     if (!prev) return false;
-    const key = cell.lessonId ?? `${cell.asignaturaNombre ?? cell.asignaturaId}::${cell.claseNombre ?? cell.claseId}`;
-    const prevKey = prev.lessonId ?? `${prev.asignaturaNombre ?? prev.asignaturaId}::${prev.claseNombre ?? prev.claseId}`;
-    return key === prevKey;
+    return getLessonKey(cell) === getLessonKey(prev);
   };
 
   const getRowSpan = (slotIdx: number) => {
     const cell = matrix[slotIdx];
     if (!cell) return 1;
-    const dur = Math.max(1, Math.floor(cell.duracion ?? 1));
     const day = Math.floor(slotIdx / lecciones);
     const dayStart = day * lecciones;
     const dayEndExclusive = dayStart + lecciones;
-    return Math.min(dur, dayEndExclusive - slotIdx);
+    const breakIdx = dayStart + breakAfterIndex;
+    const key = getLessonKey(cell);
+    let span = 1;
+    for (let i = slotIdx + 1; i < dayEndExclusive; i++) {
+      if (slotIdx <= breakIdx && i === breakIdx + 1) break;
+      const next = matrix[i];
+      if (!next) break;
+      if (getLessonKey(next) !== key) break;
+      span += 1;
+    }
+    return Math.min(span, dayEndExclusive - slotIdx);
   };
 
-  const handlePreview = () => selectedTeacherId && onPreview?.(selectedTeacherId);
   const handleExport = () => selectedTeacherId && onExport?.(selectedTeacherId);
-  const handleSave = () => selectedTeacherId && onSave?.(selectedTeacherId, Object.keys(normalizedTable).length ? normalizedTable : undefined);
 
   return (
     <div className="p-6">
@@ -167,9 +220,7 @@ export default function VistaSemanalDocente({
             </div>
 
             <div className="flex gap-2">
-              <Button variant="outline" onClick={handlePreview}><Eye className="w-4 h-4 mr-2" />Vista previa</Button>
               <Button variant="outline" onClick={handleExport}><Download className="w-4 h-4 mr-2" />Exportar</Button>
-              <Button onClick={handleSave}><Save className="w-4 h-4 mr-2" />Guardar</Button>
             </div>
           </div>
         </div>
@@ -190,7 +241,11 @@ export default function VistaSemanalDocente({
           </CardHeader>
           <CardContent>
             <div className="overflow-x-auto">
-              <table className="w-full border-collapse">
+              <table className="w-full border-collapse table-fixed">
+                <colgroup>
+                  <col className="w-28" />
+                  <col span={dias} />
+                </colgroup>
                 <thead>
                   <tr>
                     <th className="border p-2 bg-muted text-left font-semibold w-28">Hora</th>
@@ -202,9 +257,10 @@ export default function VistaSemanalDocente({
                   </tr>
                 </thead>
                 <tbody>
-                  {Array.from({ length: lecciones }).map((_, slotInDay) => (
-                    <tr key={`row-${slotInDay}`}>
-                      <td className="border p-2 font-medium bg-muted/50 text-sm">{horaLabels[slotInDay] ?? `Slot ${slotInDay + 1}`}</td>
+                  {Array.from({ length: lecciones }).flatMap((_, slotInDay) => {
+                    const row = (
+                      <tr key={`row-${slotInDay}`} style={{ height: rowHeightPx }}>
+                      <td className="border p-2 font-medium bg-muted/50 text-sm w-28">{horaLabels[slotInDay] ?? `Slot ${slotInDay + 1}`}</td>
                       {Array.from({ length: dias }).map((_, day) => {
                         const slotIdx = day * lecciones + slotInDay;
                         const cell = matrix[slotIdx];
@@ -229,9 +285,16 @@ export default function VistaSemanalDocente({
                           for (let i = 0; i < seed.length; i++) h = (h << 5) - h + seed.charCodeAt(i);
                           return colors[Math.abs(h) % colors.length];
                         })();
+                        const displayRowSpan = Math.min(rowSpan, lecciones - slotInDay);
+                        const cellHeight = rowHeightPx * displayRowSpan;
                         return (
-                          <td key={`c-${slotIdx}`} rowSpan={rowSpan} className="border p-2 align-top">
-                            <div className={`${colorClass} text-white p-2 rounded-lg`}>
+                          <td
+                            key={`c-${slotIdx}`}
+                            rowSpan={displayRowSpan}
+                            className="border align-top p-2"
+                            style={{ height: `${cellHeight}px` }}
+                          >
+                            <div className={`${colorClass} text-white p-2 rounded-lg h-full w-full flex flex-col justify-between`}>
                               <div className="font-semibold text-sm truncate">{asignatura}</div>
                               <div className="text-xs opacity-90 mt-1 truncate">{clase}</div>
                               <div className="text-[11px] opacity-80 mt-1">{dur > 1 ? `${dur} slots` : "1 slot"}</div>
@@ -240,7 +303,21 @@ export default function VistaSemanalDocente({
                         );
                       })}
                     </tr>
-                  ))}
+                    );
+                    if (slotInDay === 2) {
+                      return [
+                        row,
+                        (
+                          <tr key={`break-${slotInDay}`}>
+                            <td colSpan={dias + 1} className="border p-2 text-center text-xs font-semibold text-amber-700 bg-amber-50">
+                              DESCANSO
+                            </td>
+                          </tr>
+                        ),
+                      ];
+                    }
+                    return [row];
+                  })}
                 </tbody>
               </table>
             </div>

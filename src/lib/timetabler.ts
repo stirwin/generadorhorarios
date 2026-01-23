@@ -77,6 +77,7 @@ export function generateTimetable(
     maxRestarts?: number;
     teacherBlockedSlots?: Record<string, boolean[]>;
     forcedStarts?: Record<string, number>;
+    forcedStartOptions?: Record<string, number[]>;
     forcedLabels?: Record<string, string>;
     meetingMaxPerDay?: number;
     repairIterations?: number;
@@ -1120,15 +1121,16 @@ export function generateTimetable(
           summary.outOfBounds += 1;
           continue;
         }
+        const isMeeting = (L as LessonItem).kind === "meeting";
         const subjectKey = subjectKeyForLesson(L);
-        if (L.kind !== "meeting" && subjectKey) {
+        if (!isMeeting && subjectKey) {
           const used = subjectDayCount[subjectKey]?.[day] ?? 0;
           if (used + L.duracion > subjectMaxDailySlots) {
           summary.subjectDayConflict += 1;
           continue;
           }
         }
-        if (L.kind === "meeting" && meetingDayCount[day] >= meetingMaxPerDay) {
+        if (isMeeting && meetingDayCount[day] >= meetingMaxPerDay) {
           summary.meetingDayConflict += 1;
           continue;
         }
@@ -1140,7 +1142,7 @@ export function generateTimetable(
             blocked = true;
             break;
           }
-          if (L.kind !== "meeting") {
+          if (!isMeeting) {
             const classArr = classOcc[L.claseId];
             if (classArr && classArr[idx]) {
               summary.classConflict += 1;
@@ -1148,7 +1150,7 @@ export function generateTimetable(
               break;
             }
           }
-          const teacherIdsForLesson = L.kind === "meeting"
+          const teacherIdsForLesson = isMeeting
             ? (L.meetingTeachers ?? [])
             : (L.docenteId ? [L.docenteId] : []);
           for (const tid of teacherIdsForLesson) {
