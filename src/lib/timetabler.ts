@@ -365,6 +365,9 @@ export function generateTimetable(
     return score;
   }
 
+  // Regla: un docente solo puede dar una sola leccion por clase en un mismo dia.
+  const teacherClassDayCount: Record<string, number> = {};
+
   function resetState() {
     for (const cid of Object.keys(timetableByClase)) {
       timetableByClase[cid].fill(null);
@@ -377,6 +380,9 @@ export function generateTimetable(
       subjectDayCount[key] = Array(days).fill(0);
     }
     for (let d = 0; d < days; d++) meetingDayCount[d] = 0;
+    for (const key of Object.keys(teacherClassDayCount)) {
+      delete teacherClassDayCount[key];
+    }
   }
 
   function canPlaceLesson(L: LessonItem, start: number) {
@@ -389,6 +395,11 @@ export function generateTimetable(
     if (!isMeeting && subjectKey) {
       const used = subjectDayCount[subjectKey]?.[day] ?? 0;
       if (used + L.duracion > subjectMaxDailySlots) return false;
+    }
+    if (!isMeeting && L.docenteId && L.claseId) {
+      const key = `${L.docenteId}::${L.claseId}::${day}`;
+      const count = teacherClassDayCount[key] ?? 0;
+      if (count >= 1) return false;
     }
     if (isMeeting && meetingDayCount[day] >= meetingMaxPerDay) return false;
     const classArr = isMeeting ? null : classOcc[L.claseId];
@@ -439,6 +450,10 @@ export function generateTimetable(
     } else {
       const subjectKey = subjectKeyForLesson(L);
       if (subjectKey) subjectDayCount[subjectKey][day] += L.duracion;
+      if (L.docenteId && L.claseId) {
+        const key = `${L.docenteId}::${L.claseId}::${day}`;
+        teacherClassDayCount[key] = (teacherClassDayCount[key] ?? 0) + 1;
+      }
     }
   }
 
@@ -463,6 +478,15 @@ export function generateTimetable(
       const subjectKey = subjectKeyForLesson(L);
       if (subjectKey) {
         subjectDayCount[subjectKey][day] = Math.max(0, subjectDayCount[subjectKey][day] - L.duracion);
+      }
+      if (L.docenteId && L.claseId) {
+        const key = `${L.docenteId}::${L.claseId}::${day}`;
+        const next = (teacherClassDayCount[key] ?? 0) - 1;
+        if (next <= 0) {
+          delete teacherClassDayCount[key];
+        } else {
+          teacherClassDayCount[key] = next;
+        }
       }
     }
   }

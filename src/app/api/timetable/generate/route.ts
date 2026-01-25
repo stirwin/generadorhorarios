@@ -37,6 +37,76 @@ const buildHintAssignments = (timetable: Record<string, Array<any>> | null | und
   return hintAssignments;
 };
 
+const buildHintAssignmentsFromSlots = (
+  slots: Array<{
+    cargaId: string;
+    dia: number;
+    periodo: number;
+  }>,
+  lessons: LessonItem[],
+  slotsPerDay: number,
+) => {
+  const hintAssignments: Record<string, number> = {};
+  const lessonIdsByCarga = new Map<string, string[]>();
+  for (const lesson of lessons) {
+    if (lesson.kind === "meeting") continue;
+    if (!lessonIdsByCarga.has(lesson.cargaId)) lessonIdsByCarga.set(lesson.cargaId, []);
+    lessonIdsByCarga.get(lesson.cargaId)!.push(lesson.id);
+  }
+  const usedLessonIds = new Set<string>();
+  const orderedSlots = [...slots].sort((a, b) => (a.dia - b.dia) || (a.periodo - b.periodo));
+  for (const slot of orderedSlots) {
+    const lessonIds = lessonIdsByCarga.get(slot.cargaId);
+    if (!lessonIds || lessonIds.length === 0) continue;
+    const lessonId = lessonIds.find((id) => !usedLessonIds.has(id));
+    if (!lessonId) continue;
+    const idx = slot.dia * slotsPerDay + slot.periodo;
+    hintAssignments[lessonId] = idx;
+    usedLessonIds.add(lessonId);
+  }
+  return hintAssignments;
+};
+
+const buildFixedAssignmentsFromSlots = (
+  slots: Array<{
+    cargaId: string;
+    dia: number;
+    periodo: number;
+  }>,
+  lessons: LessonItem[],
+  slotsPerDay: number,
+  excludedTeacherIds: Set<string>,
+  forcedStarts: Record<string, number>,
+  limit: number,
+) => {
+  const fixedAssignments: Record<string, number> = {};
+  if (limit <= 0) return fixedAssignments;
+  const lessonIdsByCarga = new Map<string, string[]>();
+  const lessonById = new Map<string, LessonItem>();
+  for (const lesson of lessons) {
+    lessonById.set(lesson.id, lesson);
+    if (lesson.kind === "meeting") continue;
+    if (!lessonIdsByCarga.has(lesson.cargaId)) lessonIdsByCarga.set(lesson.cargaId, []);
+    lessonIdsByCarga.get(lesson.cargaId)!.push(lesson.id);
+  }
+  const usedLessonIds = new Set<string>();
+  const orderedSlots = [...slots].sort((a, b) => (a.dia - b.dia) || (a.periodo - b.periodo));
+  for (const slot of orderedSlots) {
+    if (Object.keys(fixedAssignments).length >= limit) break;
+    const lessonIds = lessonIdsByCarga.get(slot.cargaId);
+    if (!lessonIds || lessonIds.length === 0) continue;
+    const lessonId = lessonIds.find((id) => !usedLessonIds.has(id));
+    if (!lessonId) continue;
+    if (forcedStarts[lessonId] !== undefined) continue;
+    const lesson = lessonById.get(lessonId);
+    if (lesson?.docenteId && excludedTeacherIds.has(lesson.docenteId)) continue;
+    const idx = slot.dia * slotsPerDay + slot.periodo;
+    fixedAssignments[lessonId] = idx;
+    usedLessonIds.add(lessonId);
+  }
+  return fixedAssignments;
+};
+
 export async function POST(req: Request) {
   try {
     const body = await req.json();
@@ -124,6 +194,76 @@ export async function POST(req: Request) {
       }
     }
     const lessonById = new Map<string, LessonItem>(lessons.map((l) => [l.id, l]));
+
+    // Precheck: regla "un docente solo una leccion por clase por dia"
+    // Si el numero de lecciones de (docente, clase) supera los dias disponibles reales, no hay solucion.
+    const lessonAvailabilityByDay = (docenteId: string, duracion: number) => {
+      const blocked = teacherBlockedSlots[docenteId] ?? Array(totalSlots).fill(false);
+      const availableDays = new Set<number>();
+      for (let day = 0; day < days; day++) {
+        const dayStart = day * slotsPerDay;
+        const maxStart = dayStart + Math.max(0, slotsPerDay - duracion);
+        for (let start = dayStart; start <= maxStart; start++) {
+          let ok = true;
+          for (let p = 0; p < duracion; p++) {
+            if (blocked[start + p]) {
+              ok = false;
+              break;
+            }
+          }
+          if (ok) {
+            availableDays.add(day);
+            break;
+          }
+        }
+      }
+      return availableDays;
+    };
+
+    const teacherClassLessons = new Map<string, LessonItem[]>();
+    for (const L of lessons) {
+      if (L.kind === "meeting") continue;
+      if (!L.docenteId || !L.claseId) continue;
+      const key = `${L.docenteId}::${L.claseId}`;
+      if (!teacherClassLessons.has(key)) teacherClassLessons.set(key, []);
+      teacherClassLessons.get(key)!.push(L);
+    }
+
+    const singleSubjectConflicts: Array<{
+      docenteId: string;
+      docenteNombre?: string | null;
+      claseId: string;
+      claseNombre?: string | null;
+      lessonCount: number;
+      availableDays: number[];
+    }> = [];
+
+    for (const [key, groupLessons] of teacherClassLessons.entries()) {
+      const [docenteId, claseId] = key.split("::");
+      const unionDays = new Set<number>();
+      for (const L of groupLessons) {
+        const daysForLesson = lessonAvailabilityByDay(docenteId, L.duracion);
+        for (const d of daysForLesson) unionDays.add(d);
+      }
+      if (groupLessons.length > unionDays.size) {
+        const sample = groupLessons[0];
+        singleSubjectConflicts.push({
+          docenteId,
+          docenteNombre: sample.docenteNombre ?? null,
+          claseId,
+          claseNombre: sample.claseNombre ?? null,
+          lessonCount: groupLessons.length,
+          availableDays: Array.from(unionDays).sort((a, b) => a - b),
+        });
+      }
+    }
+
+    if (singleSubjectConflicts.length > 0) {
+      return NextResponse.json({
+        error: "Regla 'una leccion por clase por dia' imposible con la disponibilidad docente.",
+        singleSubjectConflicts,
+      }, { status: 400 });
+    }
     // Restriccion: director de grupo siempre lunes primera hora con su clase (si está activada)
     const forcedStarts: Record<string, number> = {};
     const forcedStartOptions: Record<string, number[]> = {};
@@ -138,8 +278,19 @@ export async function POST(req: Request) {
     const forcedByClass = new Set<string>();
 
     const directorMap = new Map<string, string>();
+    const invalidDirectorFlags = applyDirectorRule
+      ? docentes
+          .filter((d) => d.directorLunesAplica === true && !d.direccionGrupoId)
+          .map((d) => ({ docenteId: d.id, docenteNombre: d.nombre ?? d.id }))
+      : [];
+    if (applyDirectorRule && invalidDirectorFlags.length > 0) {
+      return NextResponse.json({
+        error: "Docentes marcados como directores sin grupo asignado.",
+        invalidDirectorFlags,
+      }, { status: 400 });
+    }
     for (const d of docentes) {
-      if (d.direccionGrupoId && d.directorLunesAplica !== false) {
+      if (typeof d.direccionGrupoId === "string" && d.direccionGrupoId.length > 0 && d.directorLunesAplica !== false) {
         directorMap.set(d.id, d.direccionGrupoId);
       }
     }
@@ -224,6 +375,12 @@ export async function POST(req: Request) {
         });
         forcedByClass.add(claseId);
       }
+    }
+    if (applyDirectorRule && forcedConflicts.length > 0) {
+      return NextResponse.json({
+        error: "Regla de directores no se puede aplicar con los datos actuales.",
+        forcedConflicts,
+      }, { status: 400 });
     }
 
     // -------------------------
@@ -528,8 +685,9 @@ export async function POST(req: Request) {
     const solverUrl = process.env.TIMETABLER_SOLVER_URL;
     const solverOptions = {
       maxBacktracks: Number(body?.maxBacktracks) || 1200000,
-      timeLimitMs: Number(body?.timeLimitMs) || 120000,
-      maxRestarts: Number(body?.maxRestarts) || 30,
+      // Tiempo moderado + mas reinicios (mejor exploracion global)
+      timeLimitMs: Number(body?.timeLimitMs) || 180000,
+      maxRestarts: Number(body?.maxRestarts) || 14,
       repairIterations: Number(body?.repairIterations) || 300,
       repairSampleSize: Number(body?.repairSampleSize) || 6,
       repairMaxConflicts: Number(body?.repairMaxConflicts) || 4,
@@ -546,15 +704,67 @@ export async function POST(req: Request) {
       priorityTeacherIds: Array.isArray(body?.priorityTeacherIds) ? body.priorityTeacherIds : undefined,
     };
     let result;
+    let fixedAssignmentsCount = 0;
     if (solverUrl) {
       const hintAssignments: Record<string, number> = {};
       let hybridHintCount = 0;
       let hybridUsed = false;
       const hybridSolve = body?.hybridSolve !== false;
+      const enableFixedAssignments = body?.enableFixedAssignments !== false;
+      const fixedAssignmentsLimit = Number.isFinite(Number(body?.fixedAssignmentsLimit))
+        ? Math.max(0, Number(body.fixedAssignmentsLimit))
+        : Math.floor(lessons.length * 0.6);
       const hintConstraintsHash = typeof body?.hintConstraintsHash === "string" ? body.hintConstraintsHash : null;
       const hintTimetable = body?.hintTimetable;
+      const fixedAssignments: Record<string, number> = {};
+      let fixedAppliedCount = 0;
       if (hintConstraintsHash && hintConstraintsHash === constraintsHash && hintTimetable && typeof hintTimetable === "object") {
         Object.assign(hintAssignments, buildHintAssignments(hintTimetable));
+      }
+      let latestHorario: { slots: Array<{ cargaId: string; dia: number; periodo: number }> } | null = null;
+      if (Object.keys(hintAssignments).length === 0) {
+        latestHorario = await prisma.horario.findFirst({
+          where: { institucionId },
+          orderBy: { createdAt: "desc" },
+          include: { slots: true },
+        });
+        if (latestHorario?.slots?.length) {
+          Object.assign(hintAssignments, buildHintAssignmentsFromSlots(latestHorario.slots, lessons, slotsPerDay));
+        }
+      }
+      if (enableFixedAssignments) {
+        if (!latestHorario) {
+          latestHorario = await prisma.horario.findFirst({
+            where: { institucionId },
+            orderBy: { createdAt: "desc" },
+            include: { slots: true },
+          });
+        }
+        if (latestHorario?.slots?.length) {
+          const excludedTeacherIds = new Set<string>();
+          for (const [teacherId, blocked] of Object.entries(teacherBlockedSlots ?? {})) {
+            if (blocked?.some(Boolean)) excludedTeacherIds.add(teacherId);
+          }
+          for (const teacherId of body?.excludeFixedTeacherIds ?? []) {
+            if (typeof teacherId === "string") excludedTeacherIds.add(teacherId);
+          }
+          for (const teacherId of body?.priorityTeacherIds ?? []) {
+            if (typeof teacherId === "string") excludedTeacherIds.add(teacherId);
+          }
+          Object.assign(
+            fixedAssignments,
+            buildFixedAssignmentsFromSlots(
+              latestHorario.slots,
+              lessons,
+              slotsPerDay,
+              excludedTeacherIds,
+              forcedStarts,
+              fixedAssignmentsLimit,
+            ),
+          );
+          fixedAppliedCount = Object.keys(fixedAssignments).length;
+          fixedAssignmentsCount = fixedAppliedCount;
+        }
       }
       if (Object.keys(hintAssignments).length === 0 && hybridSolve) {
         const localOptions = {
@@ -584,6 +794,7 @@ export async function POST(req: Request) {
         maxRestarts: solverOptions.maxRestarts,
         randomSeed: Number.isFinite(Number(body?.randomSeed)) ? Number(body?.randomSeed) : undefined,
         hintAssignments: Object.keys(hintAssignments).length > 0 ? hintAssignments : undefined,
+        fixedAssignments: Object.keys(fixedAssignments).length > 0 ? fixedAssignments : undefined,
       };
       const controller = new AbortController();
       const timeoutMs = Math.max(60000, solverOptions.timeLimitMs + 30000);
@@ -762,6 +973,29 @@ export async function POST(req: Request) {
       subjectsExceedAvailableDays: Array.isArray(result.meta?.subjectsExceedAvailableDays)
         ? result.meta.subjectsExceedAvailableDays
         : [],
+      forcedStartSummary: Object.entries(forcedStarts).map(([lessonId, slot]) => {
+        const L = lessonById.get(lessonId);
+        return {
+          lessonId,
+          slot,
+          docenteId: L?.docenteId ?? null,
+          claseId: L?.claseId ?? null,
+          asignaturaId: L?.asignaturaId ?? null,
+          duracion: L?.duracion ?? null,
+        };
+      }),
+      forcedStartOptionsSummary: Object.entries(forcedStartOptions).map(([lessonId, options]) => {
+        const L = lessonById.get(lessonId);
+        return {
+          lessonId,
+          optionsCount: Array.isArray(options) ? options.length : 0,
+          sample: Array.isArray(options) ? options.slice(0, 10) : [],
+          docenteId: L?.docenteId ?? null,
+          claseId: L?.claseId ?? null,
+          asignaturaId: L?.asignaturaId ?? null,
+          duracion: L?.duracion ?? null,
+        };
+      }),
       lessonsTotal: lessons.length - meetingLessons.length,
       assignedLessonsCount: assignedLessonIds.size,
       cargasTotal: cargas.length,
@@ -780,6 +1014,7 @@ export async function POST(req: Request) {
       },
       solver: solverUrl ? "python" : "local",
       constraintsHash,
+      fixedAssignmentsCount,
     };
 
     return NextResponse.json({

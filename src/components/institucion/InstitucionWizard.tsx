@@ -18,6 +18,7 @@ import { ImportadorExcel } from "../importaciones/ImportadorExcel";
 import type { Institucion as InstitucionType } from "@/types/institucion";
 import HorarioView from "./horarios/HorarioView";
 import type { TimetableCell } from "@/lib/timetabler"; // <-- usar el tipo canonical
+import EditInstitucionModal from "./EditInstitucionModal";
 
 export default function InstitucionWizard() {
   // -------------------------
@@ -28,6 +29,7 @@ export default function InstitucionWizard() {
 
   // Wizard modal
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const [step, setStep] = useState(1);
 
   // Paso 2 - configuración
@@ -117,6 +119,19 @@ export default function InstitucionWizard() {
     setBestAssignedCount(null);
     setLastConstraintsHash(null);
   }, [institucionSeleccionada?.id]);
+
+  async function handleInstitucionDeleted() {
+    setInstitucionSeleccionada(null);
+    setTimetable(null);
+    setTimetableStats(null);
+    setTimetableMeta(null);
+    setHorarioId(null);
+    setHorarioCreatedAt(null);
+    setLastConstraintsHash(null);
+    setLastUnplacedIds([]);
+    setLastUnplacedTeacherIds([]);
+    await fetchInstituciones();
+  }
 
   async function fetchLatestHorario(institucionId: string) {
     try {
@@ -580,7 +595,13 @@ export default function InstitucionWizard() {
               <p className="text-sm text-muted-foreground">Resumen y acciones rápidas para la institución activa.</p>
             </div>
             <div className="flex gap-2">
-              <Button variant="outline" onClick={() => setWizardOpen(true)}>Editar institución</Button>
+              <Button
+                variant="outline"
+                onClick={() => setEditOpen(true)}
+                disabled={!institucionSeleccionada}
+              >
+                Editar institución
+              </Button>
              
             </div>
           </div>
@@ -840,6 +861,14 @@ export default function InstitucionWizard() {
           </div>
         </DialogContent>
       </Dialog>
+
+      <EditInstitucionModal
+        open={editOpen}
+        onOpenChange={setEditOpen}
+        institucion={institucionSeleccionada}
+        onUpdated={fetchInstituciones}
+        onDeleted={handleInstitucionDeleted}
+      />
     </div>
   );
 }

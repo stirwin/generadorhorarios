@@ -43,6 +43,7 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     const body = await req.json();
     const nombre = typeof body?.nombre === "string" ? body.nombre : null;
     const abreviatura = typeof body?.abreviatura === "string" ? body.abreviatura : null;
+    const hasDireccionGrupoId = Object.prototype.hasOwnProperty.call(body ?? {}, "direccionGrupoId");
     const direccionGrupoId = typeof body?.direccionGrupoId === "string" ? body.direccionGrupoId : null;
     const directorLunesAplica =
       typeof body?.directorLunesAplica === "boolean" ? body.directorLunesAplica : null;
@@ -54,16 +55,18 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     const ranges = buildRanges(bloqueos);
 
     await prisma.$transaction(async (tx) => {
-      const direccionGrupoUpdate = direccionGrupoId
-        ? { connect: { id: direccionGrupoId } }
-        : { disconnect: true };
+      const direccionGrupoUpdate = hasDireccionGrupoId
+        ? (direccionGrupoId ? { connect: { id: direccionGrupoId } } : { disconnect: true })
+        : undefined;
+      const nextHasGrupo = hasDireccionGrupoId ? Boolean(direccionGrupoId) : Boolean(docente.direccionGrupoId);
+      const directorLunesUpdate = nextHasGrupo ? (directorLunesAplica ?? undefined) : false;
       await tx.docente.update({
         where: { id: docenteId },
         data: {
           nombre: nombre ?? undefined,
           abreviatura: abreviatura ?? undefined,
           direccionGrupo: direccionGrupoUpdate,
-          directorLunesAplica: directorLunesAplica ?? undefined,
+          directorLunesAplica: directorLunesUpdate,
         },
       });
       await tx.docenteRestriccion.deleteMany({ where: { docenteId } });

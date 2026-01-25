@@ -62,16 +62,34 @@ export async function POST(request: Request) {
 
     for (const d of docentes) {
       const claseKey = (d.claseAbrev || "").trim().toLowerCase();
-      if (!claseKey) continue;
       const docenteKey = (d.abreviatura || d.nombre || "").trim().toLowerCase();
       const docenteId = docentesMap.get(docenteKey) || docentesNameMap.get(docenteKey) || null;
+      if (!docenteId) continue;
+      if (!claseKey) {
+        await prisma.docente.update({
+          where: { id: docenteId },
+          data: { direccionGrupoId: null, directorLunesAplica: false },
+        });
+        continue;
+      }
       const claseId = clasesMap.get(claseKey) || null;
-      if (!docenteId || !claseId) continue;
+      if (!claseId) {
+        await prisma.docente.update({
+          where: { id: docenteId },
+          data: { direccionGrupoId: null, directorLunesAplica: false },
+        });
+        continue;
+      }
       await prisma.docente.update({
         where: { id: docenteId },
         data: { direccionGrupoId: claseId },
       });
     }
+
+    await prisma.docente.updateMany({
+      where: { institucionId, direccionGrupoId: null },
+      data: { directorLunesAplica: false },
+    });
 
     for (const carga of cargas) {
       const asignKey = (carga.asignatura || "").trim().toLowerCase();
